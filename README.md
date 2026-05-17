@@ -4,6 +4,16 @@ A TUI for browsing AI-agent request history across work locations.
 
 `crosspile` scans configured work directories and local agent stores, then presents user prompts, assistant responses, sessions, projects, agents, models, and timestamps in one searchable interface.
 
+## Built With
+
+`crosspile` is built with Go 1.26.1 and these direct packages:
+
+- `github.com/charmbracelet/bubbletea` for the terminal UI runtime.
+- `github.com/charmbracelet/bubbles` for reusable TUI components.
+- `github.com/charmbracelet/lipgloss` for terminal styling.
+- `github.com/BurntSushi/toml` for config file parsing and writing.
+- `modernc.org/sqlite` for reading local SQLite-backed agent stores without CGO.
+
 ## Config
 
 The config file is created on first run at the platform config location:
