@@ -299,17 +299,17 @@ func (m Model) renderUpdatePopup() string {
 			b.WriteString("  " + ui.StyleMuted.Render("- "+change) + "\n")
 		}
 	}
-	noStyle := ui.StyleBorder
-	yesStyle := ui.StyleBorder
+	noStyle := ui.StyleNormal
+	yesStyle := ui.StyleNormal
 	if m.updateChoice == 0 {
 		noStyle = ui.StyleSelected
 	} else {
 		yesStyle = ui.StyleSelected
 	}
 	b.WriteString("\n  ")
-	b.WriteString(noStyle.Render(" No "))
+	b.WriteString(noStyle.Render("  No  "))
 	b.WriteString("   ")
-	b.WriteString(yesStyle.Render(" Yes "))
+	b.WriteString(yesStyle.Render("  Yes  "))
 	b.WriteString("\n\n  ")
 	b.WriteString(renderKey(m.keys.left) + "/" + renderKey(m.keys.right) + " choose  ")
 	b.WriteString(renderKey(m.keys.confirm) + " confirm  ")
