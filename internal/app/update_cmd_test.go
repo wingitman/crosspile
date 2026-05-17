@@ -22,7 +22,7 @@ func TestBuildUnixDetachedUpdateCmdPullAndInstall(t *testing.T) {
 	repoDir := makeUnixUpdateRepo(t)
 	cmd := buildUnixDetachedUpdateCmd(repoDir, true, 12345)
 	joined := strings.Join(cmd.Args, "\n")
-	for _, want := range []string{"nohup sh -c", "kill -0 12345", "GCM_INTERACTIVE=never git -C", " pull", "make -C", " install", "crosspile-update.log"} {
+	for _, want := range []string{"nohup sh -c", "kill -0 12345", "run_step env GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C", " pull", "run_step make -C", " install", "Update failed while running", "crosspile-update.log"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("command missing %q in:\n%s", want, joined)
 		}

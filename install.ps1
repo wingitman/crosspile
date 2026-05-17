@@ -11,7 +11,7 @@ $BinaryName = 'crosspile.exe'
 $Remote     = 'https://github.com/wingitman/crosspile.git'
 $SourceRoot = $PSScriptRoot
 $BuildDir   = Join-Path $SourceRoot 'bin'
-$BuildBin   = Join-Path $BuildDir $BinaryName
+$BuildBin   = Join-Path ([System.IO.Path]::GetTempPath()) ("crosspile-{0}.exe" -f [guid]::NewGuid())
 $ReleaseBin = Join-Path $SourceRoot 'releases\windows\crosspile.exe'
 $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\crosspile'
 $DestBin    = Join-Path $InstallDir $BinaryName
@@ -88,7 +88,6 @@ if ($BuildAll) {
 
 if (Get-Command go -ErrorAction SilentlyContinue) {
     Step 'Building from source...'
-    New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
     $Commit = GitQuiet @('-C', $SourceRoot, 'rev-parse', '--short', 'HEAD')
     if (-not $Commit) { $Commit = 'unknown' }
     $Origin = GitQuiet @('-C', $SourceRoot, 'remote', 'get-url', 'origin')
@@ -109,6 +108,7 @@ if (Get-Command go -ErrorAction SilentlyContinue) {
 Step 'Installing binary...'
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 Copy-Item -Path $SourceBin -Destination $DestBin -Force
+if ((Test-Path $BuildBin) -and $SourceBin -eq $BuildBin) { Remove-Item -Path $BuildBin -Force }
 Ok "Installed: $DestBin"
 
 Step 'Recording repository location for auto-updater...'

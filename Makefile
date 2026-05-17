@@ -55,9 +55,10 @@ install:
 	INSTALL_LDFLAGS="-s -w -X 'main.version=$$INSTALL_COMMIT' -X 'main.origin=$$INSTALL_ORIGIN' -X 'main.repoDir=$$SOURCE_ROOT'"; \
 	if command -v go >/dev/null 2>&1; then \
 		echo "==> Building from source..."; \
-		mkdir -p "$$SOURCE_ROOT/$(BUILD_DIR)"; \
-		go -C "$$SOURCE_ROOT" build -ldflags="$$INSTALL_LDFLAGS" -o "$$SOURCE_ROOT/$(BUILD_DIR)/$(BINARY)" . || exit 1; \
-		cp "$$SOURCE_ROOT/$(BUILD_DIR)/$(BINARY)" "$(INSTALL_DIR)/$(BINARY)"; \
+		BUILD_OUT="$$(mktemp "$${TMPDIR:-/tmp}/crosspile.XXXXXX")"; \
+		trap 'rm -f "$$BUILD_OUT"' EXIT; \
+		go -C "$$SOURCE_ROOT" build -ldflags="$$INSTALL_LDFLAGS" -o "$$BUILD_OUT" . || exit 1; \
+		cp "$$BUILD_OUT" "$(INSTALL_DIR)/$(BINARY)"; \
 	else \
 		echo "==> Go not found - installing pre-built binary..."; \
 		OS="$$(uname -s | tr '[:upper:]' '[:lower:]')"; ARCH="$$(uname -m)"; \

@@ -689,14 +689,14 @@ func buildWindowsDetachedUpdateCmd(repoDir string, pullFirst bool, parentPID int
 
 func buildUnixDetachedUpdateCmd(repoDir string, pullFirst bool, parentPID int) *exec.Cmd {
 	logPath := filepath.Join(os.TempDir(), "crosspile-update.log")
-	inner := fmt.Sprintf(`echo "Waiting for crosspile to exit before updating..."; while kill -0 %d 2>/dev/null; do sleep 0.2; done; `, parentPID)
+	inner := fmt.Sprintf(`echo "Waiting for crosspile to exit before updating..."; while kill -0 %d 2>/dev/null; do sleep 0.2; done; run_step() { "$@"; code=$?; if [ $code -ne 0 ]; then echo "Update failed while running: $*"; echo "Exit code: $code"; exit $code; fi; }; `, parentPID)
 	if isGitRepo(repoDir) && pullFirst {
-		inner += fmt.Sprintf(`GCM_INTERACTIVE=never git -C %s pull || exit $?; `, shSingleQuote(repoDir))
+		inner += fmt.Sprintf(`run_step env GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -C %s pull; `, shSingleQuote(repoDir))
 	}
 	if _, err := os.Stat(filepath.Join(repoDir, "Makefile")); err == nil {
-		inner += fmt.Sprintf(`make -C %s install; `, shSingleQuote(repoDir))
+		inner += fmt.Sprintf(`run_step make -C %s install; `, shSingleQuote(repoDir))
 	} else {
-		inner += fmt.Sprintf(`echo "Cannot update automatically: Makefile was not found at %s."; `, repoDir)
+		inner += fmt.Sprintf(`echo "Cannot update automatically: Makefile was not found at %s."; exit 1; `, repoDir)
 	}
 	inner += fmt.Sprintf(`echo "Update process finished. Reopen crosspile."; echo "Log: %s"`, logPath)
 	launcher := fmt.Sprintf(`nohup sh -c %s >> %s 2>&1 < /dev/null &`, shSingleQuote(inner), shSingleQuote(logPath))
