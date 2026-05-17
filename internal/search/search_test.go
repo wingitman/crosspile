@@ -1,6 +1,7 @@
 package search
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -61,5 +62,43 @@ func TestFilterNegation(t *testing.T) {
 	got := Filter(sessions, `-agent:claude`)
 	if len(got) != 1 || got[0].ID != "one" {
 		t.Fatalf("expected only opencode session, got %#v", got)
+	}
+}
+
+func TestFilterMonthDayFromAndTo(t *testing.T) {
+	nowYear := time.Now().Year()
+	sessions := []model.Session{
+		{ID: "before", UpdatedAt: time.Date(nowYear, 3, 3, 23, 0, 0, 0, time.Local)},
+		{ID: "on", UpdatedAt: time.Date(nowYear, 3, 4, 12, 0, 0, 0, time.Local)},
+		{ID: "after", UpdatedAt: time.Date(nowYear, 3, 5, 1, 0, 0, 0, time.Local)},
+	}
+	got := Filter(sessions, "from:Mar04")
+	if len(got) != 2 || got[0].ID != "on" || got[1].ID != "after" {
+		t.Fatalf("from:Mar04 got %#v", got)
+	}
+	got = Filter(sessions, "date:Mar04")
+	if len(got) != 1 || got[0].ID != "on" {
+		t.Fatalf("date:Mar04 got %#v", got)
+	}
+}
+
+func TestFilterISODateInclusive(t *testing.T) {
+	sessions := []model.Session{
+		{ID: "before", UpdatedAt: time.Date(2026, 3, 3, 23, 0, 0, 0, time.Local)},
+		{ID: "on", UpdatedAt: time.Date(2026, 3, 4, 23, 59, 0, 0, time.Local)},
+		{ID: "after", UpdatedAt: time.Date(2026, 3, 5, 1, 0, 0, 0, time.Local)},
+	}
+	got := Filter(sessions, "from:2026-03-04 to:2026-03-04")
+	if len(got) != 1 || got[0].ID != "on" {
+		t.Fatalf("ISO inclusive range got %#v", got)
+	}
+}
+
+func TestSummaryDescribesParsedFilters(t *testing.T) {
+	summary := strings.Join(Summary("from:Mar04 agent:opencode tokens:>100"), " ")
+	for _, want := range []string{"updated >=", "agent:opencode", "tokens >= 100"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary missing %q in %q", want, summary)
+		}
 	}
 }

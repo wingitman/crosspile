@@ -1,6 +1,7 @@
 package search
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -86,6 +87,44 @@ func Filter(sessions []model.Session, raw string) []model.Session {
 		}
 	}
 	return out
+}
+
+func Summary(raw string) []string {
+	q := Parse(raw)
+	var parts []string
+	addTime := func(label string, t time.Time) {
+		if !t.IsZero() {
+			parts = append(parts, label+" "+t.Format("2006-01-02"))
+		}
+	}
+	addTime("updated >=", q.From)
+	addTime("updated <=", q.To)
+	addTime("created >=", q.CreatedFrom)
+	addTime("created <=", q.CreatedTo)
+	addTime("updated >=", q.UpdatedFrom)
+	addTime("updated <=", q.UpdatedTo)
+	for k, vals := range q.Include {
+		parts = append(parts, k+":"+strings.Join(vals, "|"))
+	}
+	for k, vals := range q.Exclude {
+		parts = append(parts, "-"+k+":"+strings.Join(vals, "|"))
+	}
+	if q.MinTokens != nil {
+		parts = append(parts, fmt.Sprintf("tokens >= %d", *q.MinTokens))
+	}
+	if q.MaxTokens != nil {
+		parts = append(parts, fmt.Sprintf("tokens <= %d", *q.MaxTokens))
+	}
+	if q.MinCost != nil {
+		parts = append(parts, fmt.Sprintf("cost >= %.4f", *q.MinCost))
+	}
+	if q.MaxCost != nil {
+		parts = append(parts, fmt.Sprintf("cost <= %.4f", *q.MaxCost))
+	}
+	if len(q.Free) > 0 {
+		parts = append(parts, "text:"+strings.Join(q.Free, " "))
+	}
+	return parts
 }
 
 func Match(s model.Session, q Query) bool {
@@ -255,11 +294,21 @@ func parseRange(s string) (time.Time, time.Time) {
 }
 
 func parseDateValue(s string, end bool) time.Time {
-	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.TrimSpace(strings.Trim(strings.ToLower(s), `"'`))
 	if s == "" {
 		return time.Time{}
 	}
 	now := time.Now()
+	if strings.HasSuffix(s, "d") {
+		days, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+		if err == nil {
+			base := now.AddDate(0, 0, -days)
+			if end {
+				return now
+			}
+			return base
+		}
+	}
 	switch s {
 	case "today":
 		base := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
@@ -274,15 +323,65 @@ func parseDateValue(s string, end bool) time.Time {
 		}
 		return base
 	}
-	for _, layout := range []string{"2006-01-02", "2006-01-02T15:04", time.RFC3339, time.RFC3339Nano} {
+	if t, ok := parseMonthDay(s, now.Year(), end); ok {
+		return t
+	}
+	for _, layout := range []string{"2006-01-02", "2006-1-2", "01/02/2006", "1/2/2006", "2006-01-02T15:04", time.RFC3339, time.RFC3339Nano} {
 		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
-			if end && layout == "2006-01-02" {
+			if end && !strings.Contains(layout, "15") && !strings.Contains(layout, "T") {
 				return endOfDay(t)
 			}
 			return t
 		}
 	}
 	return time.Time{}
+}
+
+func parseMonthDay(s string, year int, end bool) (time.Time, bool) {
+	s = strings.ReplaceAll(s, ".", "")
+	s = strings.ReplaceAll(s, "/", " ")
+	months := map[string]time.Month{
+		"jan": time.January, "january": time.January,
+		"feb": time.February, "february": time.February,
+		"mar": time.March, "march": time.March,
+		"apr": time.April, "april": time.April,
+		"may": time.May,
+		"jun": time.June, "june": time.June,
+		"jul": time.July, "july": time.July,
+		"aug": time.August, "august": time.August,
+		"sep": time.September, "sept": time.September, "september": time.September,
+		"oct": time.October, "october": time.October,
+		"nov": time.November, "november": time.November,
+		"dec": time.December, "december": time.December,
+	}
+	letters := ""
+	digits := ""
+	for _, r := range s {
+		if r >= 'a' && r <= 'z' {
+			letters += string(r)
+		} else if r >= '0' && r <= '9' {
+			digits += string(r)
+		}
+	}
+	if len(letters) < 3 || digits == "" {
+		return time.Time{}, false
+	}
+	month, ok := months[letters]
+	if !ok {
+		month, ok = months[letters[:3]]
+	}
+	if !ok {
+		return time.Time{}, false
+	}
+	day, err := strconv.Atoi(digits)
+	if err != nil || day < 1 || day > 31 {
+		return time.Time{}, false
+	}
+	t := time.Date(year, month, day, 0, 0, 0, 0, time.Local)
+	if end {
+		return endOfDay(t), true
+	}
+	return t, true
 }
 
 func endOfDay(t time.Time) time.Time {

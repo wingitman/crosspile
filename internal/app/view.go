@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/wingitman/crosspile/internal/analytics"
 	"github.com/wingitman/crosspile/internal/model"
+	"github.com/wingitman/crosspile/internal/search"
 	"github.com/wingitman/crosspile/internal/ui"
 )
 
@@ -30,6 +32,10 @@ func (m Model) View() string {
 		b.WriteString("\n" + ui.StyleMuted.Render("  scanning configured work locations...") + "\n")
 	case modeError:
 		b.WriteString("\n" + ui.StyleError.Render("  "+m.err) + "\n")
+	case modeFilterHelp:
+		b.WriteString(m.renderFilterHelp())
+	case modeAnalytics:
+		b.WriteString(m.renderAnalytics())
 	case modeRawData:
 		b.WriteString(m.renderRawView())
 	default:
@@ -116,6 +122,9 @@ func (m Model) renderSessionLayout(searching bool) string {
 	b.WriteString(ui.StyleMuted.Render(strings.Repeat("─", max(1, m.width))) + "\n")
 	if searching {
 		b.WriteString(ui.StyleInputPrompt.Render(m.keys.search) + " " + m.filterInput.View() + "\n")
+		if summary := searchSummary(m.filter); summary != "" {
+			b.WriteString("  " + ui.StyleMuted.Render("Parsed: "+summary) + "\n")
+		}
 	}
 	b.WriteString(m.renderStatus())
 	return b.String()
@@ -127,6 +136,9 @@ func (m Model) renderList(width, height int) []string {
 	lines = append(lines, ui.StylePrimary.Render(title))
 	if len(m.filtered) == 0 {
 		lines = append(lines, ui.StyleMuted.Render("  no matching sessions"))
+		if summary := searchSummary(m.filter); summary != "" {
+			lines = append(lines, ui.StyleMuted.Render("  parsed: "+summary))
+		}
 		return padLines(lines, height)
 	}
 	start := m.offset
@@ -252,10 +264,15 @@ func (m Model) contextHints() []string {
 		return []string{
 			renderKey(m.keys.confirm) + " apply",
 			renderKey(m.keys.back) + " back",
-			ui.StyleMuted.Render("agent: project: sid: model: from: to: q: a:"),
+			renderKey(m.keys.filterHelp) + " help",
+			ui.StyleMuted.Render("from:Mar04 to:May17 agent: model: tokens:>10000"),
 		}
+	case modeFilterHelp:
+		return []string{renderKey(m.keys.back) + " back", renderKey(m.keys.search) + " filter", renderKey(m.keys.quit) + " quit"}
+	case modeAnalytics:
+		return []string{renderKey(m.keys.back) + " back", renderKey(m.keys.analyticsFocus) + " fields/metrics", renderKey(m.keys.analyticsView) + " view", renderKey(m.keys.analyticsBucket) + " bucket", renderKey(m.keys.up) + "/" + renderKey(m.keys.down) + " select", renderKey(m.keys.confirm) + " toggle metric"}
 	case modeRawData:
-		return []string{renderKey(m.keys.back) + " back", renderKey(m.keys.rawNextTable) + " table", renderKey(m.keys.up) + "/" + renderKey(m.keys.down) + " rows", renderKey(m.keys.left) + "/" + renderKey(m.keys.right) + " cells"}
+		return []string{renderKey(m.keys.back) + " back", renderKey(m.keys.exportCSV) + " csv", renderKey(m.keys.exportJSON) + " json", renderKey(m.keys.confirm) + " open row", renderKey(m.keys.openDocument) + " edit cell", renderKey(m.keys.rawNextTable) + " table", renderKey(m.keys.pageUp) + "/" + renderKey(m.keys.pageDown) + " page"}
 	case modeLoading:
 		return []string{renderKey(m.keys.quit) + " quit", ui.StyleMuted.Render("scanning")}
 	case modeError:
@@ -264,6 +281,8 @@ func (m Model) contextHints() []string {
 		return []string{
 			renderKey(m.keys.up) + "/" + renderKey(m.keys.down) + " move",
 			renderKey(m.keys.search) + " filter",
+			renderKey(m.keys.filterHelp) + " help",
+			renderKey(m.keys.analytics) + " analytics",
 			renderKey(m.keys.reload) + " reload",
 			renderKey(m.keys.openDocument) + " open",
 			renderKey(m.keys.rawView) + " raw",
@@ -321,13 +340,296 @@ func renderKey(k string) string {
 	return ui.StyleStatusKey.Render("[" + k + "]")
 }
 
+func (m Model) renderFilterHelp() string {
+	lines := []string{
+		"",
+		"  " + ui.StylePrimary.Render("Filter Help"),
+		"",
+		"  Dates are inclusive. Month/day uses the current year.",
+		"  from:Mar04           updated on or after Mar 04",
+		"  to:2026-03-31        updated on or before Mar 31",
+		"  date:Mar04           exact day",
+		"  updated:Mar04..May17 updated range",
+		"  created:7d           created in the last 7 days",
+		"",
+		"  Metadata filters can be repeated. Repeats are OR; different fields are AND.",
+		"  agent:opencode       agent or mode includes opencode",
+		"  project:crosspile    project/directory includes crosspile",
+		"  location:Work        configured location name/path",
+		"  model:gpt provider:openai mode:build context:/Work",
+		"  tool:bash skill:omarchy file:main.go source:sqlite",
+		"",
+		"  Text and numeric filters:",
+		"  q:\"build a TUI\"      user prompt text",
+		"  a:error             assistant response text",
+		"  tokens:>10000      total tokens",
+		"  cost:<0.25         total cost",
+		"  -agent:claude      exclude matches",
+		"",
+		"  Example:",
+		"  " + ui.StyleMuted.Render(`from:Mar04 to:May17 agent:opencode project:crosspile model:gpt tokens:>10000 q:"raw db"`),
+		"",
+		"  " + renderKey(m.keys.back) + " back",
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderAnalytics() string {
+	if len(m.analyticsMetrics) == 0 {
+		m.analyticsMetrics = analytics.DefaultSelectedMetrics()
+	}
+	dimension := analytics.Dimensions[m.analyticsDimension]
+	bucket := analytics.Buckets[m.analyticsBucket]
+	rows := analytics.Build(m.filtered, dimension, bucket)
+	total := analytics.Totals(m.filtered)
+	selected := selectedAnalyticsMetrics(m.analyticsMetrics)
+	var b strings.Builder
+	b.WriteString("\n  " + ui.StylePrimary.Render("Analytics") + ui.StyleMuted.Render(fmt.Sprintf("  %d filtered sessions  dimension:%s  bucket:%s  view:%s", len(m.filtered), dimension, bucket, analyticsViewName(m.analyticsView))) + "\n")
+	if m.filter != "" {
+		b.WriteString("  " + ui.StyleMuted.Render("filter: "+m.filter) + "\n")
+		if summary := searchSummary(m.filter); summary != "" {
+			b.WriteString("  " + ui.StyleMuted.Render("parsed: "+summary) + "\n")
+		}
+	}
+	b.WriteString("\n")
+	if m.analyticsView != analyticsViewTable {
+		b.WriteString(m.renderAnalyticsGraph(rows, selected))
+		b.WriteString(ui.StyleMuted.Render(strings.Repeat("─", max(1, m.width))) + "\n")
+		b.WriteString("  " + ui.StylePrimary.Render("Total") + "  ")
+		for _, metric := range selected {
+			b.WriteString(metric.String() + ":" + analytics.Value(total, metric) + "  ")
+		}
+		b.WriteString("\n")
+		b.WriteString(m.renderStatus())
+		return b.String()
+	}
+	metricW := 18
+	b.WriteString("  " + ui.StyleAccent.Render("Group By") + "\n")
+	for i, dimensionOption := range analytics.Dimensions {
+		cursor := "  "
+		style := ui.StyleNormal
+		if i == m.analyticsDimension {
+			cursor = "● "
+		}
+		if m.analyticsFocus == 0 && i == m.analyticsDimension {
+			style = ui.StyleSelected
+		}
+		b.WriteString("  " + style.Render(cursor+dimensionOption.String()) + "\n")
+	}
+	b.WriteString("\n")
+	b.WriteString("  " + ui.StyleAccent.Render("Metrics") + "\n")
+	for i, metric := range analytics.Metrics {
+		cursor := "  "
+		style := ui.StyleNormal
+		if m.analyticsFocus == 1 && i == m.analyticsMetricCursor {
+			cursor = "▶ "
+			style = ui.StyleSelected
+		}
+		check := "[ ]"
+		if i < len(m.analyticsMetrics) && m.analyticsMetrics[i] {
+			check = "[x]"
+		}
+		b.WriteString("  " + style.Render(cursor+check+" "+metric.String()) + "\n")
+	}
+	b.WriteString("\n")
+	keyW := max(16, m.width-len(selected)*metricW-4)
+	if keyW > 34 {
+		keyW = 34
+	}
+	b.WriteString("  " + ui.StyleAccent.Render(padRight(dimension.String(), keyW)))
+	for _, metric := range selected {
+		b.WriteString(ui.StyleAccent.Render(padRight(metric.String(), metricW)))
+	}
+	b.WriteString("\n")
+	limit := min(len(rows), max(4, m.height-22))
+	for i := 0; i < limit; i++ {
+		row := rows[i]
+		b.WriteString("  " + padRight(truncate(row.Key, keyW-1), keyW))
+		for _, metric := range selected {
+			b.WriteString(padRight(analytics.Value(row, metric), metricW))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString(ui.StyleMuted.Render(strings.Repeat("─", max(1, m.width))) + "\n")
+	b.WriteString("  " + ui.StylePrimary.Render("Total") + "  ")
+	for _, metric := range selected {
+		b.WriteString(metric.String() + ":" + analytics.Value(total, metric) + "  ")
+	}
+	b.WriteString("\n")
+	b.WriteString(m.renderStatus())
+	return b.String()
+}
+
+const (
+	analyticsViewTable = iota
+	analyticsViewBar
+	analyticsViewTimeline
+	analyticsViewSparkline
+	analyticsViewCount
+)
+
+func analyticsViewName(v int) string {
+	switch v {
+	case analyticsViewTable:
+		return "table"
+	case analyticsViewBar:
+		return "bar"
+	case analyticsViewTimeline:
+		return "timeline"
+	case analyticsViewSparkline:
+		return "sparkline"
+	default:
+		return "unknown"
+	}
+}
+
+func (m Model) renderAnalyticsGraph(rows []analytics.Row, selected []analytics.Metric) string {
+	metric := analytics.Metrics[m.analyticsMetricCursor]
+	if len(selected) > 0 && m.analyticsMetricCursor >= len(analytics.Metrics) {
+		metric = selected[0]
+	}
+	switch m.analyticsView {
+	case analyticsViewSparkline:
+		return renderSparkline(rows, metric, m.width)
+	case analyticsViewTimeline:
+		return renderBars(rows, metric, m.width, true)
+	default:
+		return renderBars(rows, metric, m.width, false)
+	}
+}
+
+func renderBars(rows []analytics.Row, metric analytics.Metric, width int, forceTimeline bool) string {
+	var b strings.Builder
+	limit := min(len(rows), 16)
+	labelW := 24
+	barW := max(8, width-labelW-22)
+	maxVal := 0.0
+	for i := 0; i < limit; i++ {
+		if v := metricNumeric(rows[i], metric); v > maxVal {
+			maxVal = v
+		}
+	}
+	b.WriteString("  " + ui.StyleAccent.Render(metric.String()) + "\n")
+	for i := 0; i < limit; i++ {
+		row := rows[i]
+		v := metricNumeric(row, metric)
+		filled := 0
+		if maxVal > 0 {
+			filled = int((v / maxVal) * float64(barW))
+		}
+		if filled < 0 {
+			filled = 0
+		}
+		label := row.Key
+		if forceTimeline && label == "all" {
+			label = "timeline"
+		}
+		b.WriteString("  " + padRight(truncate(label, labelW-1), labelW))
+		b.WriteString(ui.StylePrimary.Render(strings.Repeat("█", filled)))
+		b.WriteString(ui.StyleMuted.Render(strings.Repeat("░", max(0, barW-filled))))
+		b.WriteString("  " + analytics.Value(row, metric) + "\n")
+	}
+	return b.String()
+}
+
+func renderSparkline(rows []analytics.Row, metric analytics.Metric, width int) string {
+	chars := []rune("▁▂▃▄▅▆▇█")
+	limit := min(len(rows), max(1, width-8))
+	maxVal := 0.0
+	vals := make([]float64, 0, limit)
+	for i := 0; i < limit; i++ {
+		v := metricNumeric(rows[i], metric)
+		vals = append(vals, v)
+		if v > maxVal {
+			maxVal = v
+		}
+	}
+	var line strings.Builder
+	for _, v := range vals {
+		idx := 0
+		if maxVal > 0 {
+			idx = int((v / maxVal) * float64(len(chars)-1))
+		}
+		line.WriteRune(chars[idx])
+	}
+	return "  " + ui.StyleAccent.Render(metric.String()) + "\n  " + ui.StylePrimary.Render(line.String()) + "\n"
+}
+
+func metricNumeric(row analytics.Row, metric analytics.Metric) float64 {
+	switch metric {
+	case analytics.MetricSessions:
+		return float64(row.Sessions)
+	case analytics.MetricTokens:
+		return float64(row.Tokens)
+	case analytics.MetricInputTokens:
+		return float64(row.InputTokens)
+	case analytics.MetricOutputTokens:
+		return float64(row.OutputTokens)
+	case analytics.MetricReasoningTokens:
+		return float64(row.ReasoningTokens)
+	case analytics.MetricCost:
+		return row.Cost
+	case analytics.MetricCostPerToken:
+		if row.Tokens == 0 {
+			return 0
+		}
+		return row.Cost / float64(row.Tokens)
+	case analytics.MetricTokensPerRequest:
+		if row.Sessions == 0 {
+			return 0
+		}
+		return float64(row.Tokens) / float64(row.Sessions)
+	case analytics.MetricCostPerRequest:
+		if row.Sessions == 0 {
+			return 0
+		}
+		return row.Cost / float64(row.Sessions)
+	default:
+		return 0
+	}
+}
+
+func selectedAnalyticsMetrics(selected []bool) []analytics.Metric {
+	var out []analytics.Metric
+	for i, metric := range analytics.Metrics {
+		if i < len(selected) && selected[i] {
+			out = append(out, metric)
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, analytics.MetricSessions)
+	}
+	return out
+}
+
+func searchSummary(raw string) string {
+	parts := search.Summary(raw)
+	if len(parts) == 0 {
+		return ""
+	}
+	if len(parts) > 5 {
+		parts = append(parts[:5], fmt.Sprintf("+%d", len(parts)-5))
+	}
+	return strings.Join(parts, "  ")
+}
+
 func (m Model) renderRawView() string {
 	if len(m.raw.Tables) == 0 {
 		return "\n" + ui.StyleMuted.Render("  no raw data loaded")
 	}
 	t := m.raw.Tables[m.rawTable]
 	var b strings.Builder
-	b.WriteString("\n  " + ui.StylePrimary.Render("Raw Data") + ui.StyleMuted.Render(fmt.Sprintf("  %s (%d rows)", t.Name, len(t.Rows))) + "\n")
+	rangeStart := 0
+	rangeEnd := 0
+	if len(t.Rows) > 0 {
+		rangeStart = t.Page*t.PageSize + 1
+		rangeEnd = rangeStart + len(t.Rows) - 1
+	}
+	loading := ""
+	if m.rawLoading {
+		loading = "  loading"
+	}
+	b.WriteString("\n  " + ui.StylePrimary.Render("Raw Data") + ui.StyleMuted.Render(fmt.Sprintf("  %s rows %d-%d of %d  page %d/%d%s", t.Name, rangeStart, rangeEnd, t.Total, t.Page+1, t.rawPageCount(), loading)) + "\n")
 	visibleCols := m.rawVisibleCols()
 	colEnd := min(len(t.Columns), m.rawColOffset+visibleCols)
 	cellW := max(12, (m.width-6)/max(1, colEnd-m.rawColOffset))
@@ -342,7 +644,7 @@ func (m Model) renderRawView() string {
 		for c := m.rawColOffset; c < colEnd; c++ {
 			cell := ""
 			if c < len(t.Rows[r]) {
-				cell = strings.ReplaceAll(t.Rows[r][c], "\n", " ")
+				cell = rawCellPreview(t.Rows[r][c])
 			}
 			style := ui.StyleNormal
 			if r == m.rawRow && c == m.rawCol {
@@ -354,17 +656,38 @@ func (m Model) renderRawView() string {
 	}
 	b.WriteString(ui.StyleMuted.Render(strings.Repeat("─", max(1, m.width))) + "\n")
 	selected := ""
+	detailHint := ""
 	if m.rawRow >= 0 && m.rawRow < len(t.Rows) && m.rawCol >= 0 && m.rawCol < len(t.Columns) && m.rawCol < len(t.Rows[m.rawRow]) {
-		selected = t.Rows[m.rawRow][m.rawCol]
+		if m.rawRowOpen {
+			selected = rawDetailValue(t.Rows[m.rawRow][m.rawCol])
+		} else {
+			selected = rawCellPreview(t.Rows[m.rawRow][m.rawCol])
+			detailHint = "  " + ui.StyleMuted.Render("("+m.keys.confirm+" to open row, "+m.keys.openDocument+" to edit cell)")
+		}
 	}
-	b.WriteString("  " + ui.StylePrimary.Render(t.Columns[m.rawCol]) + "\n")
+	column := ""
+	if m.rawCol >= 0 && m.rawCol < len(t.Columns) {
+		column = t.Columns[m.rawCol]
+	}
+	b.WriteString("  " + ui.StylePrimary.Render(column) + "\n")
 	wrapped := wrapText(selected, m.width-4)
 	for _, line := range wrapped[:min(len(wrapped), 6)] {
 		b.WriteString("  " + line + "\n")
 	}
+	if detailHint != "" {
+		b.WriteString(detailHint + "\n")
+	}
 	b.WriteString(ui.StyleMuted.Render(strings.Repeat("─", max(1, m.width))) + "\n")
 	b.WriteString(m.renderStatus())
 	return b.String()
+}
+
+func rawDetailValue(s string) string {
+	const maxDetail = 12 * 1024
+	if len(s) <= maxDetail {
+		return s
+	}
+	return s[:maxDetail] + fmt.Sprintf("\n... (%d bytes hidden in detail view)", len(s)-maxDetail)
 }
 
 func padLines(lines []string, height int) []string {

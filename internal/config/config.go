@@ -17,6 +17,7 @@ type Config struct {
 	Display   Display    `toml:"display"`
 	Updates   Updates    `toml:"updates"`
 	Apps      Apps       `toml:"apps"`
+	Output    Output     `toml:"output"`
 	Keybinds  Keybinds   `toml:"keybinds"`
 }
 
@@ -45,31 +46,44 @@ type Apps struct {
 	Editor string `toml:"editor"`
 }
 
+type Output struct {
+	ExportDir string `toml:"export_dir"`
+}
+
 type Keybinds struct {
-	Up             string `toml:"up"`
-	Down           string `toml:"down"`
-	Left           string `toml:"left"`
-	Right          string `toml:"right"`
-	Confirm        string `toml:"confirm"`
-	Back           string `toml:"back"`
-	PageUp         string `toml:"page_up"`
-	PageDown       string `toml:"page_down"`
-	Search         string `toml:"search"`
-	ClearSearch    string `toml:"clear_search"`
-	Reload         string `toml:"reload"`
-	OpenConfig     string `toml:"open_config"`
-	CheckUpdate    string `toml:"check_update"`
-	OpenDocument   string `toml:"open_document"`
-	RawView        string `toml:"raw_view"`
-	RawNextTable   string `toml:"raw_next_table"`
-	RawPrevTable   string `toml:"raw_prev_table"`
-	DetailUp       string `toml:"detail_up"`
-	DetailDown     string `toml:"detail_down"`
-	DetailPageUp   string `toml:"detail_page_up"`
-	DetailPageDown string `toml:"detail_page_down"`
-	DetailTop      string `toml:"detail_top"`
-	DetailBottom   string `toml:"detail_bottom"`
-	Quit           string `toml:"quit"`
+	Up              string `toml:"up"`
+	Down            string `toml:"down"`
+	Left            string `toml:"left"`
+	Right           string `toml:"right"`
+	Confirm         string `toml:"confirm"`
+	Back            string `toml:"back"`
+	PageUp          string `toml:"page_up"`
+	PageDown        string `toml:"page_down"`
+	Search          string `toml:"search"`
+	ClearSearch     string `toml:"clear_search"`
+	Reload          string `toml:"reload"`
+	OpenConfig      string `toml:"open_config"`
+	CheckUpdate     string `toml:"check_update"`
+	OpenDocument    string `toml:"open_document"`
+	RawView         string `toml:"raw_view"`
+	RawNextTable    string `toml:"raw_next_table"`
+	RawPrevTable    string `toml:"raw_prev_table"`
+	ExportCSV       string `toml:"export_csv"`
+	ExportJSON      string `toml:"export_json"`
+	FilterHelp      string `toml:"filter_help"`
+	Analytics       string `toml:"analytics"`
+	AnalyticsNext   string `toml:"analytics_next"`
+	AnalyticsPrev   string `toml:"analytics_prev"`
+	AnalyticsBucket string `toml:"analytics_bucket"`
+	AnalyticsView   string `toml:"analytics_view"`
+	AnalyticsFocus  string `toml:"analytics_focus"`
+	DetailUp        string `toml:"detail_up"`
+	DetailDown      string `toml:"detail_down"`
+	DetailPageUp    string `toml:"detail_page_up"`
+	DetailPageDown  string `toml:"detail_page_down"`
+	DetailTop       string `toml:"detail_top"`
+	DetailBottom    string `toml:"detail_bottom"`
+	Quit            string `toml:"quit"`
 }
 
 func Default() *Config {
@@ -88,30 +102,39 @@ func Default() *Config {
 			RemoteURL:      "https://github.com/wingitman/crosspile.git",
 		},
 		Keybinds: Keybinds{
-			Up:             "up",
-			Down:           "down",
-			Left:           "left",
-			Right:          "right",
-			Confirm:        "enter",
-			Back:           "esc",
-			PageUp:         "pgup",
-			PageDown:       "pgdown",
-			Search:         "/",
-			ClearSearch:    "esc",
-			Reload:         "r",
-			OpenConfig:     "o",
-			CheckUpdate:    "u",
-			OpenDocument:   "e",
-			RawView:        "R",
-			RawNextTable:   "tab",
-			RawPrevTable:   "shift+tab",
-			DetailUp:       "k",
-			DetailDown:     "j",
-			DetailPageUp:   "ctrl+u",
-			DetailPageDown: "ctrl+d",
-			DetailTop:      "g",
-			DetailBottom:   "G",
-			Quit:           "q",
+			Up:              "up",
+			Down:            "down",
+			Left:            "left",
+			Right:           "right",
+			Confirm:         "enter",
+			Back:            "esc",
+			PageUp:          "pgup",
+			PageDown:        "pgdown",
+			Search:          "/",
+			ClearSearch:     "esc",
+			Reload:          "r",
+			OpenConfig:      "o",
+			CheckUpdate:     "u",
+			OpenDocument:    "e",
+			RawView:         "R",
+			RawNextTable:    "tab",
+			RawPrevTable:    "shift+tab",
+			ExportCSV:       "c",
+			ExportJSON:      "J",
+			FilterHelp:      "?",
+			Analytics:       "A",
+			AnalyticsNext:   "right",
+			AnalyticsPrev:   "left",
+			AnalyticsBucket: "b",
+			AnalyticsView:   "v",
+			AnalyticsFocus:  "tab",
+			DetailUp:        "k",
+			DetailDown:      "j",
+			DetailPageUp:    "ctrl+u",
+			DetailPageDown:  "ctrl+d",
+			DetailTop:       "g",
+			DetailBottom:    "G",
+			Quit:            "q",
 		},
 	}
 }
@@ -266,6 +289,8 @@ func BuildTOML(cfg *Config) string {
 	b.WriteString("remote_url       = " + quote(cfg.Updates.RemoteURL) + "\n\n")
 	b.WriteString("[apps]\n")
 	b.WriteString("editor = " + quote(cfg.Apps.Editor) + "\n\n")
+	b.WriteString("[output]\n")
+	b.WriteString("export_dir = " + quote(cfg.Output.ExportDir) + "\n\n")
 	b.WriteString("[keybinds]\n")
 	b.WriteString("up           = " + quote(cfg.Keybinds.Up) + "\n")
 	b.WriteString("down         = " + quote(cfg.Keybinds.Down) + "\n")
@@ -284,6 +309,15 @@ func BuildTOML(cfg *Config) string {
 	b.WriteString("raw_view      = " + quote(cfg.Keybinds.RawView) + "\n")
 	b.WriteString("raw_next_table = " + quote(cfg.Keybinds.RawNextTable) + "\n")
 	b.WriteString("raw_prev_table = " + quote(cfg.Keybinds.RawPrevTable) + "\n")
+	b.WriteString("export_csv    = " + quote(cfg.Keybinds.ExportCSV) + "\n")
+	b.WriteString("export_json   = " + quote(cfg.Keybinds.ExportJSON) + "\n")
+	b.WriteString("filter_help   = " + quote(cfg.Keybinds.FilterHelp) + "\n")
+	b.WriteString("analytics     = " + quote(cfg.Keybinds.Analytics) + "\n")
+	b.WriteString("analytics_next = " + quote(cfg.Keybinds.AnalyticsNext) + "\n")
+	b.WriteString("analytics_prev = " + quote(cfg.Keybinds.AnalyticsPrev) + "\n")
+	b.WriteString("analytics_bucket = " + quote(cfg.Keybinds.AnalyticsBucket) + "\n")
+	b.WriteString("analytics_view = " + quote(cfg.Keybinds.AnalyticsView) + "\n")
+	b.WriteString("analytics_focus = " + quote(cfg.Keybinds.AnalyticsFocus) + "\n")
 	b.WriteString("detail_up     = " + quote(cfg.Keybinds.DetailUp) + "\n")
 	b.WriteString("detail_down   = " + quote(cfg.Keybinds.DetailDown) + "\n")
 	b.WriteString("detail_page_up = " + quote(cfg.Keybinds.DetailPageUp) + "\n")
@@ -357,6 +391,33 @@ func applyDefaults(cfg *Config) {
 	if cfg.Keybinds.RawPrevTable == "" {
 		cfg.Keybinds.RawPrevTable = d.Keybinds.RawPrevTable
 	}
+	if cfg.Keybinds.ExportCSV == "" {
+		cfg.Keybinds.ExportCSV = d.Keybinds.ExportCSV
+	}
+	if cfg.Keybinds.ExportJSON == "" {
+		cfg.Keybinds.ExportJSON = d.Keybinds.ExportJSON
+	}
+	if cfg.Keybinds.FilterHelp == "" {
+		cfg.Keybinds.FilterHelp = d.Keybinds.FilterHelp
+	}
+	if cfg.Keybinds.Analytics == "" {
+		cfg.Keybinds.Analytics = d.Keybinds.Analytics
+	}
+	if cfg.Keybinds.AnalyticsNext == "" {
+		cfg.Keybinds.AnalyticsNext = d.Keybinds.AnalyticsNext
+	}
+	if cfg.Keybinds.AnalyticsPrev == "" {
+		cfg.Keybinds.AnalyticsPrev = d.Keybinds.AnalyticsPrev
+	}
+	if cfg.Keybinds.AnalyticsBucket == "" {
+		cfg.Keybinds.AnalyticsBucket = d.Keybinds.AnalyticsBucket
+	}
+	if cfg.Keybinds.AnalyticsView == "" {
+		cfg.Keybinds.AnalyticsView = d.Keybinds.AnalyticsView
+	}
+	if cfg.Keybinds.AnalyticsFocus == "" {
+		cfg.Keybinds.AnalyticsFocus = d.Keybinds.AnalyticsFocus
+	}
 	if cfg.Keybinds.DetailUp == "" {
 		cfg.Keybinds.DetailUp = d.Keybinds.DetailUp
 	}
@@ -401,7 +462,7 @@ func needsMigration(path string) bool {
 		return false
 	}
 	s := string(data)
-	for _, required := range []string{"[agents]", "[display]", "[updates]", "[apps]", "[keybinds]", "preview_lines", "open_config", "check_update", "open_document", "raw_view", "raw_next_table", "detail_down", "confirm", "remote_url"} {
+	for _, required := range []string{"[agents]", "[display]", "[updates]", "[apps]", "[output]", "[keybinds]", "preview_lines", "open_config", "check_update", "open_document", "raw_view", "raw_next_table", "export_csv", "filter_help", "analytics", "analytics_view", "analytics_focus", "detail_down", "confirm", "remote_url"} {
 		if !strings.Contains(s, required) {
 			return true
 		}

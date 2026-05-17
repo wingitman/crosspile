@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -35,6 +37,45 @@ func (m Model) openSelectedDocumentCmd() tea.Cmd {
 	})
 }
 
+func (m Model) prepareRawCellEditorCmd() tea.Cmd {
+	if len(m.raw.Tables) == 0 || m.rawTable < 0 || m.rawTable >= len(m.raw.Tables) {
+		return func() tea.Msg { return rawCellEditorReadyMsg{err: fmt.Errorf("no raw table selected")} }
+	}
+	table := m.raw.Tables[m.rawTable]
+	if m.rawRow < 0 || m.rawRow >= len(table.Rows) || m.rawCol < 0 || m.rawCol >= len(table.Columns) {
+		return func() tea.Msg { return rawCellEditorReadyMsg{err: fmt.Errorf("no raw cell selected")} }
+	}
+	rowIndex := m.rawRow
+	colIndex := m.rawCol
+	column := table.Columns[colIndex]
+	session := m.rawSession
+	return func() tea.Msg {
+		value := ""
+		var err error
+		if session.SourceKind == "sqlite" {
+			value, err = loadRawCell(context.Background(), session, table.Name, table.Page, table.PageSize, rowIndex, colIndex)
+		} else if colIndex < len(table.Rows[rowIndex]) {
+			value = table.Rows[rowIndex][colIndex]
+		}
+		if err != nil {
+			return rawCellEditorReadyMsg{err: err}
+		}
+		path, err := writeRawCellTemp(table.Name, column, table.Page*table.PageSize+rowIndex+1, value)
+		return rawCellEditorReadyMsg{path: path, err: err}
+	}
+}
+
+func (m Model) openRawCellEditorCmd(path string) tea.Cmd {
+	editor := config.ResolveEditor(m.cfg.Apps.Editor)
+	cmd := exec.Command(editor, path)
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		if err != nil {
+			return errorMsg(fmt.Sprintf("editor exited with error: %v", err))
+		}
+		return rawCellEditorClosedMsg{}
+	})
+}
+
 func writeTranscriptTemp(s model.Session) (string, error) {
 	dir := filepath.Join(os.TempDir(), "crosspile")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -46,6 +87,23 @@ func writeTranscriptTemp(s model.Session) (string, error) {
 	}
 	path := filepath.Join(dir, name+".md")
 	return path, os.WriteFile(path, []byte(renderTranscriptMarkdown(s)), 0o644)
+}
+
+func writeRawCellTemp(table, column string, row int, value string) (string, error) {
+	dir := filepath.Join(os.TempDir(), "crosspile")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	ext := ".txt"
+	if json.Valid([]byte(strings.TrimSpace(value))) {
+		ext = ".json"
+	}
+	name := safeFileName(fmt.Sprintf("raw-%s-r%d-%s", table, row, column))
+	if name == "" {
+		name = "raw-cell"
+	}
+	path := filepath.Join(dir, name+ext)
+	return path, os.WriteFile(path, []byte(value), 0o644)
 }
 
 func renderTranscriptMarkdown(s model.Session) string {

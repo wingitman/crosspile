@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/wingitman/crosspile/internal/analytics"
 	"github.com/wingitman/crosspile/internal/config"
 	"github.com/wingitman/crosspile/internal/model"
 	"github.com/wingitman/crosspile/internal/scanner"
@@ -29,6 +30,8 @@ const (
 	modeOnboarding
 	modeNormal
 	modeSearch
+	modeFilterHelp
+	modeAnalytics
 	modeRawData
 	modeError
 )
@@ -48,9 +51,22 @@ type updateCheckResultMsg struct {
 }
 type statusMsg string
 type editorClosedMsg struct{}
-type rawLoadedMsg struct {
-	data rawData
+type rawCellEditorClosedMsg struct{}
+type rawCellEditorReadyMsg struct {
+	path string
 	err  error
+}
+type rawLoadedMsg struct {
+	session model.Session
+	data    rawData
+	err     error
+}
+type rawPageLoadedMsg struct {
+	sessionID string
+	source    string
+	table     string
+	data      rawTable
+	err       error
 }
 
 type Model struct {
@@ -93,19 +109,29 @@ type Model struct {
 	updatePull      bool
 
 	raw          rawData
+	rawSession   model.Session
+	rawLoading   bool
 	rawTable     int
 	rawRow       int
 	rawCol       int
+	rawRowOpen   bool
 	rawRowOffset int
 	rawColOffset int
+
+	analyticsDimension    int
+	analyticsBucket       int
+	analyticsView         int
+	analyticsFocus        int
+	analyticsMetricCursor int
+	analyticsMetrics      []bool
 }
 
 type resolvedKeys struct {
-	up, down, left, right, confirm, back, pageUp, pageDown, search, clearSearch, reload, openConfig, checkUpdate, openDocument, rawView, rawNextTable, rawPrevTable, detailUp, detailDown, detailPageUp, detailPageDown, detailTop, detailBottom, quit string
+	up, down, left, right, confirm, back, pageUp, pageDown, search, clearSearch, reload, openConfig, checkUpdate, openDocument, rawView, rawNextTable, rawPrevTable, exportCSV, exportJSON, filterHelp, analytics, analyticsNext, analyticsPrev, analyticsBucket, analyticsView, analyticsFocus, detailUp, detailDown, detailPageUp, detailPageDown, detailTop, detailBottom, quit string
 }
 
 func resolveKeys(k config.Keybinds) resolvedKeys {
-	return resolvedKeys{k.Up, k.Down, k.Left, k.Right, k.Confirm, k.Back, k.PageUp, k.PageDown, k.Search, k.ClearSearch, k.Reload, k.OpenConfig, k.CheckUpdate, k.OpenDocument, k.RawView, k.RawNextTable, k.RawPrevTable, k.DetailUp, k.DetailDown, k.DetailPageUp, k.DetailPageDown, k.DetailTop, k.DetailBottom, k.Quit}
+	return resolvedKeys{k.Up, k.Down, k.Left, k.Right, k.Confirm, k.Back, k.PageUp, k.PageDown, k.Search, k.ClearSearch, k.Reload, k.OpenConfig, k.CheckUpdate, k.OpenDocument, k.RawView, k.RawNextTable, k.RawPrevTable, k.ExportCSV, k.ExportJSON, k.FilterHelp, k.Analytics, k.AnalyticsNext, k.AnalyticsPrev, k.AnalyticsBucket, k.AnalyticsView, k.AnalyticsFocus, k.DetailUp, k.DetailDown, k.DetailPageUp, k.DetailPageDown, k.DetailTop, k.DetailBottom, k.Quit}
 }
 
 func New(cfg *config.Config, sf scanFn, origin, version, repoDir string) Model {
@@ -121,15 +147,16 @@ func New(cfg *config.Config, sf scanFn, origin, version, repoDir string) Model {
 	updateState := updatecheck.ResolveState(updatecheck.BakedInfo{Origin: origin, Version: version, RepoDir: repoDir})
 	configPath, _ := config.ConfigPath()
 	m := Model{
-		cfg:            cfg,
-		scanFn:         sf,
-		keys:           resolveKeys(cfg.Keybinds),
-		filterInput:    filterInput,
-		locInput:       locInput,
-		configPath:     configPath,
-		updateOrigin:   firstNonEmpty(updateState.Origin, cfg.Updates.RemoteURL),
-		updateRepoDir:  updateState.RepoDir,
-		currentVersion: updateState.InstalledCommit,
+		cfg:              cfg,
+		scanFn:           sf,
+		keys:             resolveKeys(cfg.Keybinds),
+		filterInput:      filterInput,
+		locInput:         locInput,
+		configPath:       configPath,
+		updateOrigin:     firstNonEmpty(updateState.Origin, cfg.Updates.RemoteURL),
+		updateRepoDir:    updateState.RepoDir,
+		currentVersion:   updateState.InstalledCommit,
+		analyticsMetrics: analytics.DefaultSelectedMetrics(),
 	}
 	m.configModTime = fileModTime(configPath)
 	if len(cfg.Locations) == 0 {
@@ -176,14 +203,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = string(msg)
 	case editorClosedMsg:
 		m.status = "editor closed"
+	case rawCellEditorClosedMsg:
+		m.status = "cell editor closed"
+	case rawCellEditorReadyMsg:
+		if msg.err != nil {
+			m.status = "cell editor failed: " + msg.err.Error()
+			return m, nil
+		}
+		return m, m.openRawCellEditorCmd(msg.path)
 	case rawLoadedMsg:
+		if msg.session.ID != m.rawSession.ID || msg.session.Source != m.rawSession.Source {
+			return m, nil
+		}
+		m.rawLoading = false
 		if msg.err != nil {
 			m.status = "raw data failed: " + msg.err.Error()
 			return m, nil
 		}
 		m.raw = msg.data
+		m.rawSession = msg.session
 		m.rawTable, m.rawRow, m.rawCol, m.rawRowOffset, m.rawColOffset = 0, 0, 0, 0, 0
+		m.rawRowOpen = false
 		m.mode = modeRawData
+	case rawPageLoadedMsg:
+		if msg.sessionID != m.rawSession.ID || msg.source != m.rawSession.Source || len(m.raw.Tables) == 0 || m.rawTable >= len(m.raw.Tables) || msg.table != m.raw.Tables[m.rawTable].Name {
+			return m, nil
+		}
+		m.rawLoading = false
+		if msg.err != nil {
+			m.status = "raw page failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.raw.Tables[m.rawTable] = msg.data
+		m.rawRow, m.rawRowOffset = 0, 0
+		m.rawRowOpen = false
+		if m.rawCol >= len(msg.data.Columns) {
+			m.rawCol = len(msg.data.Columns) - 1
+		}
+		if m.rawCol < 0 {
+			m.rawCol = 0
+		}
+		m.status = fmt.Sprintf("loaded raw page %d/%d", msg.data.Page+1, msg.data.rawPageCount())
 	case configEditorClosedMsg:
 		return m, m.reloadConfigCmd(true)
 	case configReloadedMsg:
@@ -223,6 +283,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateOnboarding(key, msg)
 		case modeSearch:
 			return m.updateSearch(key, msg)
+		case modeFilterHelp:
+			return m.updateFilterHelp(key)
+		case modeAnalytics:
+			return m.updateAnalytics(key)
 		case modeRawData:
 			return m.updateRaw(key)
 		default:
@@ -288,6 +352,10 @@ func (m Model) updateNormal(key string) (tea.Model, tea.Cmd) {
 		m.mode = modeSearch
 		m.filterInput.Focus()
 		return m, textinput.Blink
+	case m.keys.filterHelp:
+		m.mode = modeFilterHelp
+	case m.keys.analytics:
+		m.mode = modeAnalytics
 	case m.keys.clearSearch:
 		if m.filter != "" {
 			m.filter = ""
@@ -307,6 +375,8 @@ func (m Model) updateNormal(key string) (tea.Model, tea.Cmd) {
 		return m, m.openSelectedDocumentCmd()
 	case m.keys.rawView:
 		if s := m.selected(); s != nil {
+			m.rawSession = *s
+			m.rawLoading = true
 			m.status = "loading raw data..."
 			return m, loadRawDataCmd(*s)
 		}
@@ -330,6 +400,78 @@ func (m Model) updateNormal(key string) (tea.Model, tea.Cmd) {
 		m.detailScroll = 0
 	case m.keys.detailBottom:
 		m.detailScroll = 1 << 30
+	}
+	return m, nil
+}
+
+func (m Model) updateFilterHelp(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case m.keys.back, m.keys.clearSearch, m.keys.filterHelp:
+		m.mode = modeNormal
+	case m.keys.quit:
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m Model) updateAnalytics(key string) (tea.Model, tea.Cmd) {
+	const (
+		analyticsFocusDimension = iota
+		analyticsFocusMetric
+	)
+	switch key {
+	case m.keys.back, m.keys.clearSearch, m.keys.analytics:
+		m.mode = modeNormal
+	case m.keys.quit:
+		return m, tea.Quit
+	case m.keys.analyticsFocus:
+		if m.analyticsFocus == analyticsFocusDimension {
+			m.analyticsFocus = analyticsFocusMetric
+		} else {
+			m.analyticsFocus = analyticsFocusDimension
+		}
+	case m.keys.analyticsNext, m.keys.right:
+		m.analyticsDimension = (m.analyticsDimension + 1) % len(analytics.Dimensions)
+	case m.keys.analyticsPrev, m.keys.left:
+		m.analyticsDimension--
+		if m.analyticsDimension < 0 {
+			m.analyticsDimension = len(analytics.Dimensions) - 1
+		}
+	case m.keys.analyticsBucket:
+		m.analyticsBucket = (m.analyticsBucket + 1) % len(analytics.Buckets)
+	case m.keys.analyticsView:
+		m.analyticsView = (m.analyticsView + 1) % analyticsViewCount
+	case m.keys.up:
+		if m.analyticsFocus == analyticsFocusDimension {
+			m.analyticsDimension--
+		} else {
+			m.analyticsMetricCursor--
+		}
+	case m.keys.down:
+		if m.analyticsFocus == analyticsFocusDimension {
+			m.analyticsDimension++
+		} else {
+			m.analyticsMetricCursor++
+		}
+	case m.keys.confirm:
+		if m.analyticsFocus == analyticsFocusMetric {
+			if len(m.analyticsMetrics) == 0 {
+				m.analyticsMetrics = analytics.DefaultSelectedMetrics()
+			}
+			m.analyticsMetrics[m.analyticsMetricCursor] = !m.analyticsMetrics[m.analyticsMetricCursor]
+		}
+	}
+	if m.analyticsDimension < 0 {
+		m.analyticsDimension = len(analytics.Dimensions) - 1
+	}
+	if m.analyticsDimension >= len(analytics.Dimensions) {
+		m.analyticsDimension = 0
+	}
+	if m.analyticsMetricCursor < 0 {
+		m.analyticsMetricCursor = 0
+	}
+	if m.analyticsMetricCursor >= len(analytics.Metrics) {
+		m.analyticsMetricCursor = len(analytics.Metrics) - 1
 	}
 	return m, nil
 }
