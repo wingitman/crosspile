@@ -69,6 +69,13 @@ type rawPageLoadedMsg struct {
 	err       error
 }
 
+type exportTarget int
+
+const (
+	exportTargetAnalytics exportTarget = iota
+	exportTargetRaw
+)
+
 type Model struct {
 	cfg    *config.Config
 	scanFn scanFn
@@ -108,6 +115,10 @@ type Model struct {
 	updateChoice    int
 	updatePull      bool
 
+	exportPrompt bool
+	exportTarget exportTarget
+	exportChoice int
+
 	raw          rawData
 	rawSession   model.Session
 	rawLoading   bool
@@ -127,11 +138,11 @@ type Model struct {
 }
 
 type resolvedKeys struct {
-	up, down, left, right, confirm, back, pageUp, pageDown, search, clearSearch, reload, openConfig, checkUpdate, openDocument, rawView, rawNextTable, rawPrevTable, exportCSV, exportJSON, filterHelp, analytics, analyticsNext, analyticsPrev, analyticsBucket, analyticsView, analyticsFocus, detailUp, detailDown, detailPageUp, detailPageDown, detailTop, detailBottom, quit string
+	up, down, left, right, confirm, back, pageUp, pageDown, search, clearSearch, reload, openConfig, checkUpdate, openDocument, rawView, rawNextTable, rawPrevTable, export, filterHelp, analytics, analyticsNext, analyticsPrev, analyticsBucket, analyticsView, analyticsFocus, detailUp, detailDown, detailPageUp, detailPageDown, detailTop, detailBottom, quit string
 }
 
 func resolveKeys(k config.Keybinds) resolvedKeys {
-	return resolvedKeys{k.Up, k.Down, k.Left, k.Right, k.Confirm, k.Back, k.PageUp, k.PageDown, k.Search, k.ClearSearch, k.Reload, k.OpenConfig, k.CheckUpdate, k.OpenDocument, k.RawView, k.RawNextTable, k.RawPrevTable, k.ExportCSV, k.ExportJSON, k.FilterHelp, k.Analytics, k.AnalyticsNext, k.AnalyticsPrev, k.AnalyticsBucket, k.AnalyticsView, k.AnalyticsFocus, k.DetailUp, k.DetailDown, k.DetailPageUp, k.DetailPageDown, k.DetailTop, k.DetailBottom, k.Quit}
+	return resolvedKeys{k.Up, k.Down, k.Left, k.Right, k.Confirm, k.Back, k.PageUp, k.PageDown, k.Search, k.ClearSearch, k.Reload, k.OpenConfig, k.CheckUpdate, k.OpenDocument, k.RawView, k.RawNextTable, k.RawPrevTable, k.Export, k.FilterHelp, k.Analytics, k.AnalyticsNext, k.AnalyticsPrev, k.AnalyticsBucket, k.AnalyticsView, k.AnalyticsFocus, k.DetailUp, k.DetailDown, k.DetailPageUp, k.DetailPageDown, k.DetailTop, k.DetailBottom, k.Quit}
 }
 
 func New(cfg *config.Config, sf scanFn, origin, version, repoDir string) Model {
@@ -277,6 +288,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.updatePrompt || m.reinstallPrompt {
 			return m.updateUpdatePrompt(key)
+		}
+		if m.exportPrompt {
+			return m.updateExportPrompt(key)
 		}
 		switch m.mode {
 		case modeOnboarding:
@@ -441,6 +455,11 @@ func (m Model) updateAnalytics(key string) (tea.Model, tea.Cmd) {
 		m.analyticsBucket = (m.analyticsBucket + 1) % len(analytics.Buckets)
 	case m.keys.analyticsView:
 		m.analyticsView = (m.analyticsView + 1) % analyticsViewCount
+	case m.keys.export:
+		m.exportPrompt = true
+		m.exportTarget = exportTargetAnalytics
+		m.exportChoice = 0
+		m.status = "choose export format"
 	case m.keys.up:
 		if m.analyticsFocus == analyticsFocusDimension {
 			m.analyticsDimension--
@@ -474,6 +493,46 @@ func (m Model) updateAnalytics(key string) (tea.Model, tea.Cmd) {
 		m.analyticsMetricCursor = len(analytics.Metrics) - 1
 	}
 	return m, nil
+}
+
+func (m Model) updateExportPrompt(key string) (tea.Model, tea.Cmd) {
+	formats := m.exportFormats()
+	switch key {
+	case m.keys.left, m.keys.up:
+		m.exportChoice--
+	case m.keys.right, m.keys.down:
+		m.exportChoice++
+	case m.keys.confirm:
+		format := formats[m.exportChoice]
+		target := m.exportTarget
+		m.exportPrompt = false
+		m.exportChoice = 0
+		m.status = "exporting " + format + "..."
+		if target == exportTargetRaw {
+			return m, m.exportRawTableCmd(format)
+		}
+		return m, m.exportAnalyticsCmd(format)
+	case m.keys.back, m.keys.clearSearch:
+		m.exportPrompt = false
+		m.exportChoice = 0
+		m.status = "export cancelled"
+	case m.keys.quit:
+		return m, tea.Quit
+	}
+	if m.exportChoice < 0 {
+		m.exportChoice = len(formats) - 1
+	}
+	if m.exportChoice >= len(formats) {
+		m.exportChoice = 0
+	}
+	return m, nil
+}
+
+func (m Model) exportFormats() []string {
+	if m.exportTarget == exportTargetRaw {
+		return []string{"csv", "json", "txt"}
+	}
+	return []string{"csv", "txt"}
 }
 
 func (m Model) scanCmd() tea.Cmd {
@@ -725,7 +784,7 @@ func splitLocations(s string) []string {
 }
 
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.updatePrompt || m.reinstallPrompt || m.mode == modeOnboarding || m.mode == modeSearch {
+	if m.updatePrompt || m.reinstallPrompt || m.exportPrompt || m.mode == modeOnboarding || m.mode == modeSearch {
 		return m, nil
 	}
 	switch msg.Button {

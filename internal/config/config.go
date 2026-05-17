@@ -68,8 +68,8 @@ type Keybinds struct {
 	RawView         string `toml:"raw_view"`
 	RawNextTable    string `toml:"raw_next_table"`
 	RawPrevTable    string `toml:"raw_prev_table"`
+	Export          string `toml:"export"`
 	ExportCSV       string `toml:"export_csv"`
-	ExportJSON      string `toml:"export_json"`
 	FilterHelp      string `toml:"filter_help"`
 	Analytics       string `toml:"analytics"`
 	AnalyticsNext   string `toml:"analytics_next"`
@@ -119,8 +119,7 @@ func Default() *Config {
 			RawView:         "R",
 			RawNextTable:    "tab",
 			RawPrevTable:    "shift+tab",
-			ExportCSV:       "c",
-			ExportJSON:      "J",
+			Export:          "x",
 			FilterHelp:      "?",
 			Analytics:       "A",
 			AnalyticsNext:   "right",
@@ -309,8 +308,7 @@ func BuildTOML(cfg *Config) string {
 	b.WriteString("raw_view      = " + quote(cfg.Keybinds.RawView) + "\n")
 	b.WriteString("raw_next_table = " + quote(cfg.Keybinds.RawNextTable) + "\n")
 	b.WriteString("raw_prev_table = " + quote(cfg.Keybinds.RawPrevTable) + "\n")
-	b.WriteString("export_csv    = " + quote(cfg.Keybinds.ExportCSV) + "\n")
-	b.WriteString("export_json   = " + quote(cfg.Keybinds.ExportJSON) + "\n")
+	b.WriteString("export       = " + quote(cfg.Keybinds.Export) + "\n")
 	b.WriteString("filter_help   = " + quote(cfg.Keybinds.FilterHelp) + "\n")
 	b.WriteString("analytics     = " + quote(cfg.Keybinds.Analytics) + "\n")
 	b.WriteString("analytics_next = " + quote(cfg.Keybinds.AnalyticsNext) + "\n")
@@ -330,6 +328,15 @@ func BuildTOML(cfg *Config) string {
 
 func quote(s string) string {
 	return fmt.Sprintf("%q", s)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func applyDefaults(cfg *Config) {
@@ -391,11 +398,8 @@ func applyDefaults(cfg *Config) {
 	if cfg.Keybinds.RawPrevTable == "" {
 		cfg.Keybinds.RawPrevTable = d.Keybinds.RawPrevTable
 	}
-	if cfg.Keybinds.ExportCSV == "" {
-		cfg.Keybinds.ExportCSV = d.Keybinds.ExportCSV
-	}
-	if cfg.Keybinds.ExportJSON == "" {
-		cfg.Keybinds.ExportJSON = d.Keybinds.ExportJSON
+	if cfg.Keybinds.Export == "" {
+		cfg.Keybinds.Export = firstNonEmpty(cfg.Keybinds.ExportCSV, d.Keybinds.Export)
 	}
 	if cfg.Keybinds.FilterHelp == "" {
 		cfg.Keybinds.FilterHelp = d.Keybinds.FilterHelp
@@ -462,7 +466,7 @@ func needsMigration(path string) bool {
 		return false
 	}
 	s := string(data)
-	for _, required := range []string{"[agents]", "[display]", "[updates]", "[apps]", "[output]", "[keybinds]", "preview_lines", "open_config", "check_update", "open_document", "raw_view", "raw_next_table", "export_csv", "filter_help", "analytics", "analytics_view", "analytics_focus", "detail_down", "confirm", "remote_url"} {
+	for _, required := range []string{"[agents]", "[display]", "[updates]", "[apps]", "[output]", "[keybinds]", "preview_lines", "open_config", "check_update", "open_document", "raw_view", "raw_next_table", "filter_help", "analytics", "analytics_view", "analytics_focus", "detail_down", "confirm", "remote_url"} {
 		if !strings.Contains(s, required) {
 			return true
 		}

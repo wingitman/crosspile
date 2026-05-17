@@ -7,11 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wingitman/crosspile/internal/analytics"
 	"github.com/wingitman/crosspile/internal/model"
 )
 
@@ -31,7 +34,64 @@ func (m Model) exportRawTableCmd(format string) tea.Cmd {
 		if err != nil {
 			return errorMsg(err.Error())
 		}
-		return statusMsg("exported " + path)
+		return exportedStatus(path, revealExportFile(path))
+	}
+}
+
+func (m Model) exportAnalyticsCmd(format string) tea.Cmd {
+	dimension := analytics.Dimensions[m.analyticsDimension]
+	bucket := analytics.Buckets[m.analyticsBucket]
+	selected := selectedAnalyticsMetrics(m.analyticsMetrics)
+	rows := analytics.Build(m.filtered, dimension, bucket)
+	total := analytics.Totals(m.filtered)
+	exportDir := m.cfg.Output.ExportDir
+	return func() tea.Msg {
+		columns, data := analyticsExportData(dimension, selected, rows, total)
+		path, err := writeAnalyticsExport(exportDir, dimension, bucket, format, columns, data)
+		if err != nil {
+			return errorMsg(err.Error())
+		}
+		return exportedStatus(path, revealExportFile(path))
+	}
+}
+
+func analyticsExportData(dimension analytics.Dimension, metrics []analytics.Metric, rows []analytics.Row, total analytics.Row) ([]string, [][]string) {
+	columns := []string{dimension.String()}
+	for _, metric := range metrics {
+		columns = append(columns, metric.String())
+	}
+	out := make([][]string, 0, len(rows)+1)
+	for _, row := range rows {
+		out = append(out, analyticsExportRow(row, metrics))
+	}
+	total.Key = "total"
+	out = append(out, analyticsExportRow(total, metrics))
+	return columns, out
+}
+
+func analyticsExportRow(row analytics.Row, metrics []analytics.Metric) []string {
+	out := []string{row.Key}
+	for _, metric := range metrics {
+		out = append(out, analytics.Value(row, metric))
+	}
+	return out
+}
+
+func writeAnalyticsExport(exportDir string, dimension analytics.Dimension, bucket analytics.Bucket, format string, columns []string, rows [][]string) (string, error) {
+	dir := resolveExportDir(exportDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	stamp := time.Now().Format("20060102-150405")
+	name := safeFileName(fmt.Sprintf("crosspile-analytics-%s-%s-%s.%s", dimension, bucket, stamp, format))
+	path := filepath.Join(dir, name)
+	switch format {
+	case "csv":
+		return path, writeCSV(path, columns, rows)
+	case "txt":
+		return path, writeText(path, columns, rows)
+	default:
+		return "", fmt.Errorf("unsupported analytics export format %q", format)
 	}
 }
 
@@ -94,8 +154,36 @@ func writeExport(exportDir, sessionID, tableName, format string, columns []strin
 		return path, writeCSV(path, columns, rows)
 	case "json":
 		return path, writeJSON(path, columns, rows)
+	case "txt":
+		return path, writeText(path, columns, rows)
 	default:
 		return "", fmt.Errorf("unsupported export format %q", format)
+	}
+}
+
+func exportedStatus(path string, revealErr error) tea.Msg {
+	if revealErr != nil {
+		return statusMsg("exported " + path + "; file explorer failed: " + revealErr.Error())
+	}
+	return statusMsg("exported " + path + " and opened file explorer")
+}
+
+func revealExportFile(path string) error {
+	cmd := fileExplorerCommand(runtime.GOOS, path)
+	if cmd == nil {
+		return fmt.Errorf("unsupported platform")
+	}
+	return cmd.Run()
+}
+
+func fileExplorerCommand(goos, path string) *exec.Cmd {
+	switch goos {
+	case "darwin":
+		return exec.Command("open", "-R", path)
+	case "windows":
+		return exec.Command("explorer", "/select,"+path)
+	default:
+		return exec.Command("xdg-open", filepath.Dir(path))
 	}
 }
 
@@ -136,6 +224,50 @@ func writeJSON(path string, columns []string, rows [][]string) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
+}
+
+func writeText(path string, columns []string, rows [][]string) error {
+	widths := make([]int, len(columns))
+	for i, col := range columns {
+		widths[i] = len(col)
+	}
+	for _, row := range rows {
+		for i, val := range row {
+			if i < len(widths) && len(val) > widths[i] {
+				widths[i] = len(val)
+			}
+		}
+	}
+	var b strings.Builder
+	writeTextRow(&b, columns, widths)
+	for i, width := range widths {
+		if i > 0 {
+			b.WriteString("  ")
+		}
+		b.WriteString(strings.Repeat("-", width))
+	}
+	b.WriteByte('\n')
+	for _, row := range rows {
+		writeTextRow(&b, row, widths)
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
+func writeTextRow(b *strings.Builder, row []string, widths []int) {
+	for i, width := range widths {
+		if i > 0 {
+			b.WriteString("  ")
+		}
+		val := ""
+		if i < len(row) {
+			val = row[i]
+		}
+		b.WriteString(val)
+		if pad := width - len(val); pad > 0 {
+			b.WriteString(strings.Repeat(" ", pad))
+		}
+	}
+	b.WriteByte('\n')
 }
 
 func resolveExportDir(dir string) string {

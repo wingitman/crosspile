@@ -274,12 +274,11 @@ func (m Model) updateRaw(key string) (tea.Model, tea.Cmd) {
 	case m.keys.openDocument:
 		m.status = "opening raw cell..."
 		return m, m.prepareRawCellEditorCmd()
-	case m.keys.exportCSV:
-		m.status = "exporting csv..."
-		return m, m.exportRawTableCmd("csv")
-	case m.keys.exportJSON:
-		m.status = "exporting json..."
-		return m, m.exportRawTableCmd("json")
+	case m.keys.export:
+		m.exportPrompt = true
+		m.exportTarget = exportTargetRaw
+		m.exportChoice = 0
+		m.status = "choose export format"
 	case m.keys.rawNextTable:
 		m.rawLoading = false
 		m.rawTable = (m.rawTable + 1) % len(m.raw.Tables)

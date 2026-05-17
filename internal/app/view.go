@@ -25,6 +25,10 @@ func (m Model) View() string {
 		b.WriteString(m.renderUpdatePopup())
 		return b.String()
 	}
+	if m.exportPrompt {
+		b.WriteString(m.renderExportPopup())
+		return b.String()
+	}
 	switch m.mode {
 	case modeOnboarding:
 		b.WriteString(m.renderOnboarding())
@@ -293,9 +297,9 @@ func (m Model) contextHints() []string {
 	case modeFilterHelp:
 		return []string{renderKey(m.keys.back) + " back", renderKey(m.keys.search) + " filter", renderKey(m.keys.quit) + " quit"}
 	case modeAnalytics:
-		return []string{renderKey(m.keys.back) + " back", renderKey(m.keys.analyticsFocus) + " fields/metrics", renderKey(m.keys.analyticsView) + " view", renderKey(m.keys.analyticsBucket) + " bucket", renderKey(m.keys.up) + "/" + renderKey(m.keys.down) + " select", renderKey(m.keys.confirm) + " toggle metric"}
+		return []string{renderKey(m.keys.back) + " back", renderKey(m.keys.export) + " export", renderKey(m.keys.analyticsFocus) + " fields/metrics", renderKey(m.keys.analyticsView) + " view", renderKey(m.keys.analyticsBucket) + " bucket", renderKey(m.keys.up) + "/" + renderKey(m.keys.down) + " select", renderKey(m.keys.confirm) + " toggle metric"}
 	case modeRawData:
-		return []string{renderKey(m.keys.back) + " back", renderKey(m.keys.exportCSV) + " csv", renderKey(m.keys.exportJSON) + " json", renderKey(m.keys.confirm) + " open row", renderKey(m.keys.openDocument) + " edit cell", renderKey(m.keys.rawNextTable) + " table", renderKey(m.keys.pageUp) + "/" + renderKey(m.keys.pageDown) + " page"}
+		return []string{renderKey(m.keys.back) + " back", renderKey(m.keys.export) + " export", renderKey(m.keys.confirm) + " open row", renderKey(m.keys.openDocument) + " edit cell", renderKey(m.keys.rawNextTable) + " table", renderKey(m.keys.pageUp) + "/" + renderKey(m.keys.pageDown) + " page"}
 	case modeLoading:
 		return []string{renderKey(m.keys.quit) + " quit", ui.StyleMuted.Render("scanning")}
 	case modeError:
@@ -361,6 +365,35 @@ func (m Model) renderUpdatePopup() string {
 
 func renderKey(k string) string {
 	return ui.StyleStatusKey.Render("[" + k + "]")
+}
+
+func (m Model) renderExportPopup() string {
+	title := "Export Analytics"
+	if m.exportTarget == exportTargetRaw {
+		title = "Export Raw Data"
+	}
+	formats := m.exportFormats()
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(ui.StyleAccent.Render("  " + title))
+	b.WriteString("\n\n")
+	b.WriteString("  Select file type. The exported file will be shown in your file explorer.\n")
+	b.WriteString("\n  ")
+	for i, format := range formats {
+		style := ui.StyleNormal
+		if i == m.exportChoice {
+			style = ui.StyleSelected
+		}
+		if i > 0 {
+			b.WriteString("   ")
+		}
+		b.WriteString(style.Render("  " + strings.ToUpper(format) + "  "))
+	}
+	b.WriteString("\n\n  ")
+	b.WriteString(renderKey(m.keys.left) + "/" + renderKey(m.keys.right) + " choose  ")
+	b.WriteString(renderKey(m.keys.confirm) + " export  ")
+	b.WriteString(renderKey(m.keys.back) + " cancel")
+	return ui.StyleBorder.Width(min(76, max(44, m.width-6))).Render(b.String())
 }
 
 func (m Model) renderFilterHelp() string {
