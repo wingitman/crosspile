@@ -762,7 +762,18 @@ func (m Model) selected() *model.Session {
 }
 
 func (m Model) listHeight() int {
-	return max(1, m.height-8)
+	return max(1, m.height-8-m.warningPanelHeight())
+}
+
+func (m Model) warningPanelHeight() int {
+	if len(m.warnings) == 0 {
+		return 0
+	}
+	height := 1 + min(len(m.warnings), 3)
+	if len(m.warnings) > 3 {
+		height++
+	}
+	return height
 }
 
 func (m Model) listWidth() int {

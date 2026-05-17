@@ -17,19 +17,11 @@ import (
 )
 
 type sessionRow struct {
-	id               string
-	title            string
-	directory        string
-	agent            sql.NullString
-	modelJSON        sql.NullString
-	timeCreated      int64
-	timeUpdated      int64
-	cost             float64
-	tokensIn         int64
-	tokensOut        int64
-	tokensReasoning  int64
-	tokensCacheRead  int64
-	tokensCacheWrite int64
+	id          string
+	title       string
+	directory   string
+	timeCreated int64
+	timeUpdated int64
 }
 
 type messageRow struct {
@@ -46,15 +38,25 @@ type partRow struct {
 }
 
 type messageData struct {
-	Role       string `json:"role"`
-	Agent      string `json:"agent"`
-	Mode       string `json:"mode"`
-	ModelID    string `json:"modelID"`
-	ProviderID string `json:"providerID"`
+	Role       string  `json:"role"`
+	Agent      string  `json:"agent"`
+	Mode       string  `json:"mode"`
+	ModelID    string  `json:"modelID"`
+	ProviderID string  `json:"providerID"`
+	Cost       float64 `json:"cost"`
 	Time       struct {
 		Created   int64 `json:"created"`
 		Completed int64 `json:"completed"`
 	} `json:"time"`
+	Tokens struct {
+		Input     int64 `json:"input"`
+		Output    int64 `json:"output"`
+		Reasoning int64 `json:"reasoning"`
+		Cache     struct {
+			Read  int64 `json:"read"`
+			Write int64 `json:"write"`
+		} `json:"cache"`
+	} `json:"tokens"`
 }
 
 type partData struct {
@@ -64,13 +66,6 @@ type partData struct {
 	Title string          `json:"title"`
 	State json.RawMessage `json:"state"`
 	File  string          `json:"file"`
-}
-
-type modelData struct {
-	ID         string `json:"id"`
-	ModelID    string `json:"modelID"`
-	ProviderID string `json:"providerID"`
-	Variant    string `json:"variant"`
 }
 
 func Scan(ctx context.Context, locations []string) ([]model.Session, []string) {
@@ -103,7 +98,7 @@ func scanDB(ctx context.Context, path string, locations []string) ([]model.Sessi
 	}
 	defer db.Close()
 
-	rows, err := db.QueryContext(ctx, `select id, title, directory, agent, model, time_created, time_updated, cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write from session order by time_updated desc`)
+	rows, err := db.QueryContext(ctx, `select id, title, directory, time_created, time_updated from session order by time_updated desc`)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +107,7 @@ func scanDB(ctx context.Context, path string, locations []string) ([]model.Sessi
 	var sessionRows []sessionRow
 	for rows.Next() {
 		var r sessionRow
-		if err := rows.Scan(&r.id, &r.title, &r.directory, &r.agent, &r.modelJSON, &r.timeCreated, &r.timeUpdated, &r.cost, &r.tokensIn, &r.tokensOut, &r.tokensReasoning, &r.tokensCacheRead, &r.tokensCacheWrite); err != nil {
+		if err := rows.Scan(&r.id, &r.title, &r.directory, &r.timeCreated, &r.timeUpdated); err != nil {
 			return nil, err
 		}
 		if inLocations(r.directory, locations) {
@@ -142,37 +137,18 @@ func scanDB(ctx context.Context, path string, locations []string) ([]model.Sessi
 	out := make([]model.Session, 0, len(sessionRows))
 	for _, r := range sessionRows {
 		s := model.Session{
-			ID:               r.id,
-			Title:            r.title,
-			Agent:            "opencode",
-			Directory:        r.directory,
-			Project:          filepath.Base(r.directory),
-			CreatedAt:        unixish(r.timeCreated),
-			UpdatedAt:        unixish(r.timeUpdated),
-			Cost:             r.cost,
-			TokensIn:         r.tokensIn,
-			TokensOut:        r.tokensOut,
-			TokensReasoning:  r.tokensReasoning,
-			TokensCacheRead:  r.tokensCacheRead,
-			TokensCacheWrite: r.tokensCacheWrite,
-			Source:           path,
-			SourceKind:       "sqlite",
-			Context:          r.directory,
-			RawRefs:          map[string][]string{"session": []string{r.id}},
-			Metadata:         map[string]string{"source_table": "session"},
-		}
-		if r.agent.Valid && r.agent.String != "" {
-			s.Mode = r.agent.String
-		}
-		if r.modelJSON.Valid {
-			var md modelData
-			if json.Unmarshal([]byte(r.modelJSON.String), &md) == nil {
-				s.Model = firstNonEmpty(md.ID, md.ModelID)
-				s.Provider = md.ProviderID
-				if md.Variant != "" && s.Model != "" {
-					s.Model += " (" + md.Variant + ")"
-				}
-			}
+			ID:         r.id,
+			Title:      r.title,
+			Agent:      "opencode",
+			Directory:  r.directory,
+			Project:    filepath.Base(r.directory),
+			CreatedAt:  unixish(r.timeCreated),
+			UpdatedAt:  unixish(r.timeUpdated),
+			Source:     path,
+			SourceKind: "sqlite",
+			Context:    r.directory,
+			RawRefs:    map[string][]string{"session": []string{r.id}},
+			Metadata:   map[string]string{"source_table": "session"},
 		}
 
 		for _, mr := range messages[r.id] {
@@ -192,6 +168,12 @@ func scanDB(ctx context.Context, path string, locations []string) ([]model.Sessi
 				if md.Time.Created > 0 {
 					msg.CreatedAt = unixish(md.Time.Created)
 				}
+				s.Cost += md.Cost
+				s.TokensIn += md.Tokens.Input
+				s.TokensOut += md.Tokens.Output
+				s.TokensReasoning += md.Tokens.Reasoning
+				s.TokensCacheRead += md.Tokens.Cache.Read
+				s.TokensCacheWrite += md.Tokens.Cache.Write
 			}
 			if msg.Role == "" {
 				msg.Role = "unknown"

@@ -255,7 +255,30 @@ func (m Model) renderStatus() string {
 	if m.status != "" {
 		parts = append(parts, ui.StyleMuted.Render(m.status))
 	}
-	return " " + strings.Join(parts, ui.StyleMuted.Render("  "))
+	out := " " + strings.Join(parts, ui.StyleMuted.Render("  "))
+	if warnings := m.renderWarnings(); warnings != "" {
+		out += "\n" + warnings
+	}
+	return out
+}
+
+func (m Model) renderWarnings() string {
+	if len(m.warnings) == 0 {
+		return ""
+	}
+	lines := []string{" " + ui.StyleError.Render("warnings:")}
+	limit := min(len(m.warnings), 3)
+	for _, warning := range m.warnings[:limit] {
+		warning = strings.TrimSpace(warning)
+		if warning == "" {
+			warning = "unknown warning"
+		}
+		lines = append(lines, "  "+ui.StyleMuted.Render(truncate(warning, max(10, m.width-4))))
+	}
+	if len(m.warnings) > limit {
+		lines = append(lines, "  "+ui.StyleMuted.Render(fmt.Sprintf("+%d more warning(s)", len(m.warnings)-limit)))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) contextHints() []string {
