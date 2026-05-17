@@ -7,25 +7,35 @@ import (
 )
 
 type Session struct {
-	ID        string
-	Title     string
-	Agent     string
-	Mode      string
-	Model     string
-	Provider  string
-	Project   string
-	Directory string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Messages  []Message
-	Todos     []Todo
-	Files     []string
-	Tools     []string
-	Cost      float64
-	TokensIn  int64
-	TokensOut int64
-	Source    string
-	Warnings  []string
+	ID               string
+	Title            string
+	Agent            string
+	Mode             string
+	Context          string
+	Model            string
+	Provider         string
+	Project          string
+	Directory        string
+	LocationName     string
+	LocationPath     string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	Messages         []Message
+	Todos            []Todo
+	Files            []string
+	Tools            []string
+	Skills           []string
+	Cost             float64
+	TokensIn         int64
+	TokensOut        int64
+	TokensReasoning  int64
+	TokensCacheRead  int64
+	TokensCacheWrite int64
+	Source           string
+	SourceKind       string
+	RawRefs          map[string][]string
+	Metadata         map[string]string
+	Warnings         []string
 }
 
 type Message struct {
@@ -63,6 +73,10 @@ func (s Session) AllText() string {
 	b.WriteString(" ")
 	b.WriteString(s.Agent)
 	b.WriteString(" ")
+	b.WriteString(s.Mode)
+	b.WriteString(" ")
+	b.WriteString(s.Context)
+	b.WriteString(" ")
 	b.WriteString(s.Model)
 	b.WriteString(" ")
 	b.WriteString(s.Provider)
@@ -70,6 +84,10 @@ func (s Session) AllText() string {
 	b.WriteString(s.Project)
 	b.WriteString(" ")
 	b.WriteString(s.Directory)
+	b.WriteString(" ")
+	b.WriteString(s.LocationName)
+	b.WriteString(" ")
+	b.WriteString(s.LocationPath)
 	for _, msg := range s.Messages {
 		b.WriteString(" ")
 		b.WriteString(msg.Role)
@@ -90,7 +108,21 @@ func (s Session) AllText() string {
 		b.WriteString(" ")
 		b.WriteString(f)
 	}
+	for _, skill := range s.Skills {
+		b.WriteString(" ")
+		b.WriteString(skill)
+	}
+	for k, v := range s.Metadata {
+		b.WriteString(" ")
+		b.WriteString(k)
+		b.WriteString("=")
+		b.WriteString(v)
+	}
 	return b.String()
+}
+
+func (s Session) TotalTokens() int64 {
+	return s.TokensIn + s.TokensOut + s.TokensReasoning + s.TokensCacheRead + s.TokensCacheWrite
 }
 
 func (s Session) Preview(max int) string {

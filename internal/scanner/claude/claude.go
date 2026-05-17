@@ -82,7 +82,7 @@ func parseFile(path string) (model.Session, error) {
 	}
 	defer f.Close()
 
-	s := model.Session{Agent: "claude", Source: path, ID: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))}
+	s := model.Session{Agent: "claude", Source: path, SourceKind: "jsonl", ID: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1024), 4*1024*1024)
 	for scanner.Scan() {
@@ -100,6 +100,7 @@ func parseFile(path string) (model.Session, error) {
 		if ev.CWD != "" {
 			s.Directory = ev.CWD
 			s.Project = filepath.Base(ev.CWD)
+			s.Context = ev.CWD
 		}
 		at := parseTime(ev.Timestamp)
 		if s.CreatedAt.IsZero() || (!at.IsZero() && at.Before(s.CreatedAt)) {

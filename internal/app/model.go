@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/wingitman/crosspile/internal/model"
 	"github.com/wingitman/crosspile/internal/scanner"
 	"github.com/wingitman/crosspile/internal/search"
+	"github.com/wingitman/crosspile/internal/updatecheck"
 )
 
 type scanFn func(context.Context, *config.Config) scanner.Result
@@ -27,11 +29,29 @@ const (
 	modeOnboarding
 	modeNormal
 	modeSearch
+	modeRawData
 	modeError
 )
 
 type scanMsg scanner.Result
 type errorMsg string
+type configEditorClosedMsg struct{}
+type configReloadedMsg struct {
+	cfg *config.Config
+	err error
+}
+type configCheckMsg struct {
+	modTime time.Time
+}
+type updateCheckResultMsg struct {
+	result updatecheck.Result
+}
+type statusMsg string
+type editorClosedMsg struct{}
+type rawLoadedMsg struct {
+	data rawData
+	err  error
+}
 
 type Model struct {
 	cfg    *config.Config
@@ -42,10 +62,11 @@ type Model struct {
 	height int
 	mode   mode
 
-	sessions []model.Session
-	filtered []model.Session
-	cursor   int
-	offset   int
+	sessions     []model.Session
+	filtered     []model.Session
+	cursor       int
+	offset       int
+	detailScroll int
 
 	filterInput textinput.Model
 	locInput    textinput.Model
@@ -56,17 +77,38 @@ type Model struct {
 	warnings []string
 	status   string
 	err      string
+
+	configPath    string
+	configModTime time.Time
+
+	updateOrigin    string
+	updateRepoDir   string
+	currentVersion  string
+	updatePrompt    bool
+	reinstallPrompt bool
+	updateLatest    string
+	updateMessage   string
+	updateChanges   []string
+	updateChoice    int
+	updatePull      bool
+
+	raw          rawData
+	rawTable     int
+	rawRow       int
+	rawCol       int
+	rawRowOffset int
+	rawColOffset int
 }
 
 type resolvedKeys struct {
-	up, down, pageUp, pageDown, search, clearSearch, reload, openConfig, quit string
+	up, down, left, right, confirm, back, pageUp, pageDown, search, clearSearch, reload, openConfig, checkUpdate, openDocument, rawView, rawNextTable, rawPrevTable, detailUp, detailDown, detailPageUp, detailPageDown, detailTop, detailBottom, quit string
 }
 
 func resolveKeys(k config.Keybinds) resolvedKeys {
-	return resolvedKeys{k.Up, k.Down, k.PageUp, k.PageDown, k.Search, k.ClearSearch, k.Reload, k.OpenConfig, k.Quit}
+	return resolvedKeys{k.Up, k.Down, k.Left, k.Right, k.Confirm, k.Back, k.PageUp, k.PageDown, k.Search, k.ClearSearch, k.Reload, k.OpenConfig, k.CheckUpdate, k.OpenDocument, k.RawView, k.RawNextTable, k.RawPrevTable, k.DetailUp, k.DetailDown, k.DetailPageUp, k.DetailPageDown, k.DetailTop, k.DetailBottom, k.Quit}
 }
 
-func New(cfg *config.Config, sf scanFn) Model {
+func New(cfg *config.Config, sf scanFn, origin, version, repoDir string) Model {
 	filterInput := textinput.New()
 	filterInput.Placeholder = "filter: text agent:opencode project:crosspile from:2026-05-01 q:prompt a:response"
 	filterInput.CharLimit = 512
@@ -76,7 +118,20 @@ func New(cfg *config.Config, sf scanFn) Model {
 	locInput.CharLimit = 1024
 	locInput.Focus()
 
-	m := Model{cfg: cfg, scanFn: sf, keys: resolveKeys(cfg.Keybinds), filterInput: filterInput, locInput: locInput}
+	updateState := updatecheck.ResolveState(updatecheck.BakedInfo{Origin: origin, Version: version, RepoDir: repoDir})
+	configPath, _ := config.ConfigPath()
+	m := Model{
+		cfg:            cfg,
+		scanFn:         sf,
+		keys:           resolveKeys(cfg.Keybinds),
+		filterInput:    filterInput,
+		locInput:       locInput,
+		configPath:     configPath,
+		updateOrigin:   firstNonEmpty(updateState.Origin, cfg.Updates.RemoteURL),
+		updateRepoDir:  updateState.RepoDir,
+		currentVersion: updateState.InstalledCommit,
+	}
+	m.configModTime = fileModTime(configPath)
 	if len(cfg.Locations) == 0 {
 		m.mode = modeOnboarding
 	} else {
@@ -87,10 +142,16 @@ func New(cfg *config.Config, sf scanFn) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	if len(m.cfg.Locations) == 0 {
-		return textinput.Blink
+	cmds := []tea.Cmd{m.configWatchCmd()}
+	if m.cfg.Updates.CheckOnStartup {
+		cmds = append(cmds, m.checkUpdateCmd())
 	}
-	return m.scanCmd()
+	if len(m.cfg.Locations) == 0 {
+		cmds = append(cmds, textinput.Blink)
+		return tea.Batch(cmds...)
+	}
+	cmds = append(cmds, m.scanCmd())
+	return tea.Batch(cmds...)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -111,19 +172,64 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scanning = false
 		m.mode = modeError
 		m.err = string(msg)
+	case statusMsg:
+		m.status = string(msg)
+	case editorClosedMsg:
+		m.status = "editor closed"
+	case rawLoadedMsg:
+		if msg.err != nil {
+			m.status = "raw data failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.raw = msg.data
+		m.rawTable, m.rawRow, m.rawCol, m.rawRowOffset, m.rawColOffset = 0, 0, 0, 0, 0
+		m.mode = modeRawData
+	case configEditorClosedMsg:
+		return m, m.reloadConfigCmd(true)
+	case configReloadedMsg:
+		if msg.err != nil {
+			m.status = "config reload failed: " + msg.err.Error()
+			return m, nil
+		}
+		oldLocations := locationsSignature(m.cfg)
+		oldAgents := agentsSignature(m.cfg)
+		m.cfg = msg.cfg
+		m.keys = resolveKeys(msg.cfg.Keybinds)
+		m.configModTime = fileModTime(m.configPath)
+		m.status = "config reloaded"
+		if oldLocations != locationsSignature(msg.cfg) || oldAgents != agentsSignature(msg.cfg) {
+			m.scanning = true
+			return m, m.scanCmd()
+		}
+	case configCheckMsg:
+		cmds = append(cmds, m.configWatchCmd())
+		if !msg.modTime.IsZero() && !m.configModTime.IsZero() && msg.modTime.After(m.configModTime) {
+			cmds = append(cmds, m.reloadConfigCmd(false))
+		} else if m.configModTime.IsZero() {
+			m.configModTime = msg.modTime
+		}
+	case updateCheckResultMsg:
+		m = m.applyUpdateResult(msg.result, m.cfg.Updates.AutoPrompt)
 	case tea.KeyMsg:
 		key := msg.String()
 		if key == "ctrl+c" {
 			return m, tea.Quit
+		}
+		if m.updatePrompt || m.reinstallPrompt {
+			return m.updateUpdatePrompt(key)
 		}
 		switch m.mode {
 		case modeOnboarding:
 			return m.updateOnboarding(key, msg)
 		case modeSearch:
 			return m.updateSearch(key, msg)
+		case modeRawData:
+			return m.updateRaw(key)
 		default:
 			return m.updateNormal(key)
 		}
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	}
 	return m, tea.Batch(cmds...)
 }
@@ -132,7 +238,7 @@ func (m Model) updateOnboarding(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd)
 	switch key {
 	case m.keys.quit:
 		return m, tea.Quit
-	case "enter":
+	case m.keys.confirm:
 		paths := splitLocations(m.locInput.Value())
 		if len(paths) == 0 {
 			m.status = "enter at least one work location"
@@ -154,13 +260,13 @@ func (m Model) updateOnboarding(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd)
 
 func (m Model) updateSearch(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key {
-	case m.keys.clearSearch:
+	case m.keys.clearSearch, m.keys.back:
 		m.filterInput.Blur()
 		m.filter = m.filterInput.Value()
 		m.applyFilter()
 		m.mode = modeNormal
 		return m, nil
-	case "enter":
+	case m.keys.confirm:
 		m.filterInput.Blur()
 		m.filter = m.filterInput.Value()
 		m.applyFilter()
@@ -193,7 +299,17 @@ func (m Model) updateNormal(key string) (tea.Model, tea.Cmd) {
 		m.status = "scanning..."
 		return m, m.scanCmd()
 	case m.keys.openConfig:
-		return m, openConfigCmd()
+		return m, m.openConfigCmd()
+	case m.keys.checkUpdate:
+		m.status = "checking for updates..."
+		return m, m.checkUpdateCmd()
+	case m.keys.openDocument:
+		return m, m.openSelectedDocumentCmd()
+	case m.keys.rawView:
+		if s := m.selected(); s != nil {
+			m.status = "loading raw data..."
+			return m, loadRawDataCmd(*s)
+		}
 	case m.keys.up:
 		m.move(-1)
 	case m.keys.down:
@@ -202,6 +318,18 @@ func (m Model) updateNormal(key string) (tea.Model, tea.Cmd) {
 		m.move(-10)
 	case m.keys.pageDown:
 		m.move(10)
+	case m.keys.detailUp:
+		m.scrollDetail(-1)
+	case m.keys.detailDown:
+		m.scrollDetail(1)
+	case m.keys.detailPageUp:
+		m.scrollDetail(-m.listHeight() / 2)
+	case m.keys.detailPageDown:
+		m.scrollDetail(m.listHeight() / 2)
+	case m.keys.detailTop:
+		m.detailScroll = 0
+	case m.keys.detailBottom:
+		m.detailScroll = 1 << 30
 	}
 	return m, nil
 }
@@ -229,6 +357,7 @@ func (m *Model) move(delta int) {
 	if len(m.filtered) == 0 {
 		return
 	}
+	old := m.cursor
 	m.cursor += delta
 	if m.cursor < 0 {
 		m.cursor = 0
@@ -236,7 +365,17 @@ func (m *Model) move(delta int) {
 	if m.cursor >= len(m.filtered) {
 		m.cursor = len(m.filtered) - 1
 	}
+	if old != m.cursor {
+		m.detailScroll = 0
+	}
 	m.ensureCursorVisible()
+}
+
+func (m *Model) scrollDetail(delta int) {
+	m.detailScroll += delta
+	if m.detailScroll < 0 {
+		m.detailScroll = 0
+	}
 }
 
 func (m *Model) ensureCursorVisible() {
@@ -255,28 +394,181 @@ func (m *Model) ensureCursorVisible() {
 	}
 }
 
-func openConfigCmd() tea.Cmd {
+func (m Model) openConfigCmd() tea.Cmd {
 	path, err := config.ConfigPath()
 	if err != nil {
 		return func() tea.Msg { return errorMsg(err.Error()) }
 	}
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		switch runtime.GOOS {
-		case "windows":
-			editor = "notepad"
-		default:
-			editor = "vi"
-		}
-	}
+	editor := config.ResolveEditor(m.cfg.Apps.Editor)
 	cmd := exec.Command(editor, path)
 	return tea.ExecProcess(cmd, func(err error) tea.Msg {
 		if err != nil {
 			return errorMsg(err.Error())
 		}
-		return nil
+		return configEditorClosedMsg{}
 	})
 }
+
+func (m Model) reloadConfigCmd(forceScan bool) tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := config.Load()
+		if err != nil {
+			return configReloadedMsg{err: err}
+		}
+		if forceScan {
+			return configReloadedMsg{cfg: cfg}
+		}
+		return configReloadedMsg{cfg: cfg}
+	}
+}
+
+func (m Model) configWatchCmd() tea.Cmd {
+	path := m.configPath
+	return tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+		return configCheckMsg{modTime: fileModTime(path)}
+	})
+}
+
+func (m Model) checkUpdateCmd() tea.Cmd {
+	baked := updatecheck.BakedInfo{Origin: firstNonEmpty(m.cfg.Updates.RemoteURL, m.updateOrigin), Version: m.currentVersion, RepoDir: m.updateRepoDir}
+	return func() tea.Msg {
+		return updateCheckResultMsg{result: updatecheck.StartupCheck(baked)}
+	}
+}
+
+func (m Model) applyUpdateResult(result updatecheck.Result, prompt bool) Model {
+	switch result.Kind {
+	case updatecheck.UpToDate:
+		m.status = "crosspile is up to date"
+	case updatecheck.CheckUnavailable:
+		m.status = "update check unavailable"
+	case updatecheck.RemoteAhead:
+		m.updateLatest = result.State.RemoteCommit
+		m.updateMessage = result.Message
+		m.updateChanges = result.RecentChanges
+		m.updateRepoDir = result.State.RepoDir
+		m.updateOrigin = result.State.Origin
+		m.updatePull = true
+		m.updateChoice = 0
+		m.status = "update available " + result.State.RemoteCommit
+		if prompt {
+			m.updatePrompt = true
+		}
+	case updatecheck.LocalRepoAhead, updatecheck.MetadataMissing, updatecheck.RepoMissing:
+		m.reinstallPrompt = prompt
+		m.updateMessage = result.Message
+		m.updateChanges = result.RecentChanges
+		m.updateRepoDir = result.State.RepoDir
+		m.updateOrigin = result.State.Origin
+		m.updateChoice = 0
+		m.updatePull = false
+		m.status = result.Kind.String()
+	}
+	return m
+}
+
+func (m Model) updateUpdatePrompt(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case m.keys.left, m.keys.right, m.keys.up, m.keys.down:
+		if m.updateChoice == 0 {
+			m.updateChoice = 1
+		} else {
+			m.updateChoice = 0
+		}
+	case m.keys.confirm:
+		if m.updateChoice == 1 {
+			m.updatePrompt = false
+			m.reinstallPrompt = false
+			return m, m.runUpdateCmd(m.updatePull)
+		}
+		m.updatePrompt = false
+		m.reinstallPrompt = false
+		m.updateChoice = 0
+	case m.keys.back, m.keys.clearSearch, m.keys.quit:
+		m.updatePrompt = false
+		m.reinstallPrompt = false
+		m.updateChoice = 0
+	}
+	return m, nil
+}
+
+func (m Model) runUpdateCmd(pullFirst bool) tea.Cmd {
+	repoDir := resolveRepoDir(m.updateRepoDir)
+	return func() tea.Msg {
+		cmd := buildDetachedUpdateCmd(repoDir, pullFirst, os.Getpid())
+		if err := cmd.Run(); err != nil {
+			return statusMsg("update failed to start: " + err.Error())
+		}
+		return tea.Quit()
+	}
+}
+
+func resolveRepoDir(embedded string) string {
+	meta := config.ReadInstallMeta()
+	if meta.RepoDir != "" {
+		if info, err := os.Stat(meta.RepoDir); err == nil && info.IsDir() {
+			return meta.RepoDir
+		}
+	}
+	if embedded != "" {
+		if info, err := os.Stat(embedded); err == nil && info.IsDir() {
+			return embedded
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	return filepath.Join(home, "Downloads", "crosspile")
+}
+
+func buildDetachedUpdateCmd(repoDir string, pullFirst bool, parentPID int) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return buildWindowsDetachedUpdateCmd(repoDir, pullFirst, parentPID)
+	}
+	return buildUnixDetachedUpdateCmd(repoDir, pullFirst, parentPID)
+}
+
+func buildWindowsDetachedUpdateCmd(repoDir string, pullFirst bool, parentPID int) *exec.Cmd {
+	inner := fmt.Sprintf(`$ErrorActionPreference='Stop'; Write-Host 'Waiting for crosspile to exit before updating...'; Wait-Process -Id %d -ErrorAction SilentlyContinue; `, parentPID)
+	if isGitRepo(repoDir) && pullFirst {
+		inner += fmt.Sprintf(`$env:GCM_INTERACTIVE='never'; git -C %s pull; $pullCode=$LASTEXITCODE; $env:GCM_INTERACTIVE=$null; if ($pullCode -ne 0) { exit $pullCode }; `, psSingleQuote(repoDir))
+	}
+	installer := filepath.Join(repoDir, "install.ps1")
+	if _, err := os.Stat(installer); err == nil {
+		inner += fmt.Sprintf(`& %s; `, psSingleQuote(installer))
+	} else {
+		inner += fmt.Sprintf(`Write-Host 'Cannot update automatically: install.ps1 was not found at %s.' -ForegroundColor Yellow; `, psSingleQuote(repoDir))
+	}
+	inner += `Write-Host ''; Write-Host 'Update process finished. You can close this window and reopen crosspile.' -ForegroundColor Green`
+	wrapper := fmt.Sprintf(`Start-Process powershell -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-Command',%s)`, psSingleQuote(inner))
+	return exec.Command("powershell", "-NoProfile", "-Command", wrapper)
+}
+
+func buildUnixDetachedUpdateCmd(repoDir string, pullFirst bool, parentPID int) *exec.Cmd {
+	logPath := filepath.Join(os.TempDir(), "crosspile-update.log")
+	inner := fmt.Sprintf(`echo "Waiting for crosspile to exit before updating..."; while kill -0 %d 2>/dev/null; do sleep 0.2; done; `, parentPID)
+	if isGitRepo(repoDir) && pullFirst {
+		inner += fmt.Sprintf(`GCM_INTERACTIVE=never git -C %s pull || exit $?; `, shSingleQuote(repoDir))
+	}
+	if _, err := os.Stat(filepath.Join(repoDir, "Makefile")); err == nil {
+		inner += fmt.Sprintf(`make -C %s install; `, shSingleQuote(repoDir))
+	} else {
+		inner += fmt.Sprintf(`echo "Cannot update automatically: Makefile was not found at %s."; `, repoDir)
+	}
+	inner += fmt.Sprintf(`echo "Update process finished. Reopen crosspile."; echo "Log: %s"`, logPath)
+	launcher := fmt.Sprintf(`nohup sh -c %s >> %s 2>&1 < /dev/null &`, shSingleQuote(inner), shSingleQuote(logPath))
+	return exec.Command("sh", "-c", launcher)
+}
+
+func isGitRepo(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
+}
+
+func psSingleQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
+
+func shSingleQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'" }
 
 func splitLocations(s string) []string {
 	fields := strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == '\n' })
@@ -290,6 +582,36 @@ func splitLocations(s string) []string {
 	return out
 }
 
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.updatePrompt || m.reinstallPrompt || m.mode == modeOnboarding || m.mode == modeSearch {
+		return m, nil
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		if msg.X < m.listWidth() {
+			m.move(-1)
+		} else {
+			m.scrollDetail(-1)
+		}
+	case tea.MouseButtonWheelDown:
+		if msg.X < m.listWidth() {
+			m.move(1)
+		} else {
+			m.scrollDetail(1)
+		}
+	case tea.MouseButtonLeft:
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+		idx := m.offset + msg.Y - 3
+		if idx >= 0 && idx < len(m.filtered) && msg.X < m.listWidth() {
+			m.cursor = idx
+			m.ensureCursorVisible()
+		}
+	}
+	return m, nil
+}
+
 func (m Model) selected() *model.Session {
 	if m.cursor < 0 || m.cursor >= len(m.filtered) {
 		return nil
@@ -299,6 +621,52 @@ func (m Model) selected() *model.Session {
 
 func (m Model) listHeight() int {
 	return max(1, m.height-8)
+}
+
+func (m Model) listWidth() int {
+	listW := int(float64(m.width) * 0.40)
+	if listW < 36 {
+		listW = 36
+	}
+	if listW > 72 {
+		listW = 72
+	}
+	if m.width-listW < 40 {
+		listW = max(24, m.width-40)
+	}
+	return listW
+}
+
+func fileModTime(path string) time.Time {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
+
+func locationsSignature(cfg *config.Config) string {
+	var b strings.Builder
+	for _, loc := range cfg.Locations {
+		b.WriteString(loc.Name)
+		b.WriteByte('=')
+		b.WriteString(loc.Path)
+		b.WriteByte(';')
+	}
+	return b.String()
+}
+
+func agentsSignature(cfg *config.Config) string {
+	return fmt.Sprintf("%t:%t:%t", cfg.Agents.OpenCode, cfg.Agents.Claude, cfg.Agents.Generic)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func max(a, b int) int {

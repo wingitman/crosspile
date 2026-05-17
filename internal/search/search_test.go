@@ -40,3 +40,26 @@ func TestFilterFreeText(t *testing.T) {
 		t.Fatalf("expected free-text match")
 	}
 }
+
+func TestFilterExpandedMetadata(t *testing.T) {
+	sessions := []model.Session{{
+		ID: "ses_one", Agent: "opencode", Mode: "build", Project: "crosspile", LocationName: "Work",
+		Model: "gpt-5.5", Provider: "opencode", Tools: []string{"bash"}, Skills: []string{"omarchy"},
+		TokensIn: 9000, TokensOut: 2000, Cost: 0.15,
+		UpdatedAt: time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC),
+		Messages:  []model.Message{{Role: "user", Parts: []model.Part{{Type: "text", Text: "build a TUI"}}}},
+	}}
+
+	got := Filter(sessions, `agent:open project:cross location:work model:gpt tool:bash skill:omarchy tokens:>10000 cost:<0.20 q:"build a TUI" updated:2026-05-01..2026-05-17`)
+	if len(got) != 1 {
+		t.Fatalf("expected expanded metadata match, got %d", len(got))
+	}
+}
+
+func TestFilterNegation(t *testing.T) {
+	sessions := []model.Session{{ID: "one", Agent: "opencode"}, {ID: "two", Agent: "claude"}}
+	got := Filter(sessions, `-agent:claude`)
+	if len(got) != 1 || got[0].ID != "one" {
+		t.Fatalf("expected only opencode session, got %#v", got)
+	}
+}

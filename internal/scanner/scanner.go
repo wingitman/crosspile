@@ -43,10 +43,23 @@ func Scan(ctx context.Context, cfg *config.Config) Result {
 	}
 
 	out.Sessions = dedupe(out.Sessions)
+	annotateLocations(out.Sessions, cfg.Locations)
 	sort.SliceStable(out.Sessions, func(i, j int) bool {
 		return out.Sessions[i].UpdatedAt.After(out.Sessions[j].UpdatedAt)
 	})
 	return out
+}
+
+func annotateLocations(sessions []model.Session, locations []config.Location) {
+	for i := range sessions {
+		for _, loc := range locations {
+			if loc.Path != "" && InLocations(sessions[i].Directory, []string{loc.Path}) {
+				sessions[i].LocationName = loc.Name
+				sessions[i].LocationPath = loc.Path
+				break
+			}
+		}
+	}
 }
 
 func locationPaths(cfg *config.Config) []string {

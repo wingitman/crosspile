@@ -108,7 +108,8 @@ func parseJSON(path string) (model.Session, error) {
 
 func baseSession(path string) model.Session {
 	dir := filepath.Dir(path)
-	return model.Session{ID: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), Agent: "generic", Project: filepath.Base(dir), Directory: dir, Source: path}
+	kind := strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
+	return model.Session{ID: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), Agent: "generic", Project: filepath.Base(dir), Directory: dir, Context: dir, Source: path, SourceKind: kind}
 }
 
 func addRecord(s *model.Session, raw []byte) {
@@ -133,6 +134,7 @@ func addRecord(s *model.Session, raw []byte) {
 	if r.CWD != "" {
 		s.Directory = r.CWD
 		s.Project = filepath.Base(r.CWD)
+		s.Context = r.CWD
 	}
 	at := parseTime(firstNonEmpty(r.Timestamp, r.CreatedAt))
 	if s.CreatedAt.IsZero() || (!at.IsZero() && at.Before(s.CreatedAt)) {

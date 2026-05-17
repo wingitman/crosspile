@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -16,16 +17,19 @@ import (
 )
 
 type sessionRow struct {
-	id          string
-	title       string
-	directory   string
-	agent       sql.NullString
-	modelJSON   sql.NullString
-	timeCreated int64
-	timeUpdated int64
-	cost        float64
-	tokensIn    int64
-	tokensOut   int64
+	id               string
+	title            string
+	directory        string
+	agent            sql.NullString
+	modelJSON        sql.NullString
+	timeCreated      int64
+	timeUpdated      int64
+	cost             float64
+	tokensIn         int64
+	tokensOut        int64
+	tokensReasoning  int64
+	tokensCacheRead  int64
+	tokensCacheWrite int64
 }
 
 type messageRow struct {
@@ -70,11 +74,17 @@ type modelData struct {
 }
 
 func Scan(ctx context.Context, locations []string) ([]model.Session, []string) {
-	path := dbPath()
-	if path == "" {
-		return nil, nil
+	var path string
+	for _, candidate := range dbPaths() {
+		if candidate == "" {
+			continue
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			path = candidate
+			break
+		}
 	}
-	if _, err := os.Stat(path); err != nil {
+	if path == "" {
 		return nil, nil
 	}
 
@@ -86,14 +96,14 @@ func Scan(ctx context.Context, locations []string) ([]model.Session, []string) {
 }
 
 func scanDB(ctx context.Context, path string, locations []string) ([]model.Session, error) {
-	dsn := "file:" + filepath.ToSlash(path) + "?mode=ro&_pragma=busy_timeout(5000)"
+	dsn := sqliteURI(path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
 
-	rows, err := db.QueryContext(ctx, `select id, title, directory, agent, model, time_created, time_updated, cost, tokens_input, tokens_output from session order by time_updated desc`)
+	rows, err := db.QueryContext(ctx, `select id, title, directory, agent, model, time_created, time_updated, cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write from session order by time_updated desc`)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +112,7 @@ func scanDB(ctx context.Context, path string, locations []string) ([]model.Sessi
 	var sessionRows []sessionRow
 	for rows.Next() {
 		var r sessionRow
-		if err := rows.Scan(&r.id, &r.title, &r.directory, &r.agent, &r.modelJSON, &r.timeCreated, &r.timeUpdated, &r.cost, &r.tokensIn, &r.tokensOut); err != nil {
+		if err := rows.Scan(&r.id, &r.title, &r.directory, &r.agent, &r.modelJSON, &r.timeCreated, &r.timeUpdated, &r.cost, &r.tokensIn, &r.tokensOut, &r.tokensReasoning, &r.tokensCacheRead, &r.tokensCacheWrite); err != nil {
 			return nil, err
 		}
 		if inLocations(r.directory, locations) {
@@ -132,17 +142,24 @@ func scanDB(ctx context.Context, path string, locations []string) ([]model.Sessi
 	out := make([]model.Session, 0, len(sessionRows))
 	for _, r := range sessionRows {
 		s := model.Session{
-			ID:        r.id,
-			Title:     r.title,
-			Agent:     "opencode",
-			Directory: r.directory,
-			Project:   filepath.Base(r.directory),
-			CreatedAt: unixish(r.timeCreated),
-			UpdatedAt: unixish(r.timeUpdated),
-			Cost:      r.cost,
-			TokensIn:  r.tokensIn,
-			TokensOut: r.tokensOut,
-			Source:    path,
+			ID:               r.id,
+			Title:            r.title,
+			Agent:            "opencode",
+			Directory:        r.directory,
+			Project:          filepath.Base(r.directory),
+			CreatedAt:        unixish(r.timeCreated),
+			UpdatedAt:        unixish(r.timeUpdated),
+			Cost:             r.cost,
+			TokensIn:         r.tokensIn,
+			TokensOut:        r.tokensOut,
+			TokensReasoning:  r.tokensReasoning,
+			TokensCacheRead:  r.tokensCacheRead,
+			TokensCacheWrite: r.tokensCacheWrite,
+			Source:           path,
+			SourceKind:       "sqlite",
+			Context:          r.directory,
+			RawRefs:          map[string][]string{"session": []string{r.id}},
+			Metadata:         map[string]string{"source_table": "session"},
 		}
 		if r.agent.Valid && r.agent.String != "" {
 			s.Mode = r.agent.String
@@ -193,6 +210,7 @@ func scanDB(ctx context.Context, path string, locations []string) ([]model.Sessi
 			}
 			if len(msg.Parts) > 0 {
 				s.Messages = append(s.Messages, msg)
+				s.RawRefs["message"] = append(s.RawRefs["message"], mr.id)
 			}
 		}
 		out = append(out, s)
@@ -311,18 +329,41 @@ func summarizeTool(pd partData) string {
 	return strings.Join(bits, " ") + "]"
 }
 
-func dbPath() string {
+func dbPaths() []string {
+	var paths []string
 	if override := os.Getenv("OPENCODE_DATA_DIR"); override != "" {
-		return filepath.Join(override, "opencode.db")
+		paths = append(paths, filepath.Join(override, "opencode.db"))
 	}
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
-		return filepath.Join(xdg, "opencode", "opencode.db")
+		paths = append(paths, filepath.Join(xdg, "opencode", "opencode.db"))
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		return paths
 	}
-	return filepath.Join(home, ".local", "share", "opencode", "opencode.db")
+	switch runtime.GOOS {
+	case "darwin":
+		paths = append(paths, filepath.Join(home, "Library", "Application Support", "opencode", "opencode.db"))
+	case "windows":
+		if local := os.Getenv("LOCALAPPDATA"); local != "" {
+			paths = append(paths, filepath.Join(local, "opencode", "opencode.db"))
+		}
+		if appdata := os.Getenv("APPDATA"); appdata != "" {
+			paths = append(paths, filepath.Join(appdata, "opencode", "opencode.db"))
+		}
+	default:
+		paths = append(paths, filepath.Join(home, ".local", "share", "opencode", "opencode.db"))
+	}
+	paths = append(paths, filepath.Join(home, ".local", "share", "opencode", "opencode.db"))
+	return paths
+}
+
+func sqliteURI(path string) string {
+	p := filepath.ToSlash(path)
+	if runtime.GOOS == "windows" && !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return "file:" + p + "?mode=ro&_pragma=busy_timeout(5000)"
 }
 
 func inLocations(path string, locations []string) bool {
