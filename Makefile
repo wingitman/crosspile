@@ -17,8 +17,9 @@ build:
 	@echo "Built: $(BUILD_DIR)/$(BINARY)"
 
 build-all:
-	@mkdir -p $(RELEASES_DIR)/linux $(RELEASES_DIR)/darwin/amd64 $(RELEASES_DIR)/darwin/arm64 $(RELEASES_DIR)/windows
-	GOOS=linux   GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o $(RELEASES_DIR)/linux/$(BINARY) .
+	@mkdir -p $(RELEASES_DIR)/linux/amd64 $(RELEASES_DIR)/linux/arm64 $(RELEASES_DIR)/darwin/amd64 $(RELEASES_DIR)/darwin/arm64 $(RELEASES_DIR)/windows
+	GOOS=linux   GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o $(RELEASES_DIR)/linux/amd64/$(BINARY) .
+	GOOS=linux   GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(RELEASES_DIR)/linux/arm64/$(BINARY) .
 	GOOS=darwin  GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o $(RELEASES_DIR)/darwin/amd64/$(BINARY) .
 	GOOS=darwin  GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(RELEASES_DIR)/darwin/arm64/$(BINARY) .
 	GOOS=windows GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o $(RELEASES_DIR)/windows/$(BINARY).exe .
@@ -62,9 +63,8 @@ install:
 	else \
 		echo "==> Go not found - installing pre-built binary..."; \
 		OS="$$(uname -s | tr '[:upper:]' '[:lower:]')"; ARCH="$$(uname -m)"; \
-		if [ "$$ARCH" = "x86_64" ]; then ARCH="amd64"; fi; \
-		if [ "$$ARCH" = "aarch64" ]; then ARCH="arm64"; fi; \
-		if [ "$$OS" = "darwin" ]; then RELEASE_BIN="$$SOURCE_ROOT/$(RELEASES_DIR)/darwin/$$ARCH/$(BINARY)"; else RELEASE_BIN="$$SOURCE_ROOT/$(RELEASES_DIR)/linux/$(BINARY)"; fi; \
+		case "$$ARCH" in x86_64|amd64) ARCH="amd64" ;; aarch64|arm64) ARCH="arm64" ;; *) echo "ERROR: unsupported architecture: $$ARCH"; exit 1 ;; esac; \
+		if [ "$$OS" = "darwin" ]; then RELEASE_BIN="$$SOURCE_ROOT/$(RELEASES_DIR)/darwin/$$ARCH/$(BINARY)"; elif [ "$$OS" = "linux" ]; then RELEASE_BIN="$$SOURCE_ROOT/$(RELEASES_DIR)/linux/$$ARCH/$(BINARY)"; else echo "ERROR: unsupported OS: $$OS"; exit 1; fi; \
 		if [ ! -f "$$RELEASE_BIN" ]; then echo "ERROR: missing pre-built binary: $$RELEASE_BIN"; exit 1; fi; \
 		cp "$$RELEASE_BIN" "$(INSTALL_DIR)/$(BINARY)"; \
 		chmod +x "$(INSTALL_DIR)/$(BINARY)"; \

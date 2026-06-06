@@ -69,7 +69,8 @@ if ($BuildAll) {
     if (-not $Origin) { $Origin = $Remote }
     $LdFlags = "-s -w -X 'main.version=$Commit' -X 'main.origin=$Origin' -X 'main.repoDir=$SourceRoot'"
     $targets = @(
-        @{ GOOS='linux'; GOARCH='amd64'; Out='releases\linux\crosspile' },
+        @{ GOOS='linux'; GOARCH='amd64'; Out='releases\linux\amd64\crosspile' },
+        @{ GOOS='linux'; GOARCH='arm64'; Out='releases\linux\arm64\crosspile' },
         @{ GOOS='darwin'; GOARCH='amd64'; Out='releases\darwin\amd64\crosspile' },
         @{ GOOS='darwin'; GOARCH='arm64'; Out='releases\darwin\arm64\crosspile' },
         @{ GOOS='windows'; GOARCH='amd64'; Out='releases\windows\crosspile.exe' }
