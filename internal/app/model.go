@@ -18,6 +18,7 @@ import (
 	"github.com/wingitman/crosspile/internal/model"
 	"github.com/wingitman/crosspile/internal/scanner"
 	"github.com/wingitman/crosspile/internal/search"
+	"github.com/wingitman/crosspile/internal/ui"
 	"github.com/wingitman/crosspile/internal/updatecheck"
 )
 
@@ -34,6 +35,7 @@ const (
 	modeAnalytics
 	modeRawData
 	modeError
+	modeTheme
 )
 
 type scanMsg scanner.Result
@@ -101,6 +103,9 @@ type Model struct {
 	status   string
 	err      string
 
+	themeCursor int
+	themeNames  []string
+
 	configPath    string
 	configModTime time.Time
 
@@ -138,14 +143,15 @@ type Model struct {
 }
 
 type resolvedKeys struct {
-	up, down, left, right, confirm, back, pageUp, pageDown, search, clearSearch, reload, openConfig, checkUpdate, openDocument, rawView, rawNextTable, rawPrevTable, export, filterHelp, analytics, analyticsNext, analyticsPrev, analyticsBucket, analyticsView, analyticsFocus, detailUp, detailDown, detailPageUp, detailPageDown, detailTop, detailBottom, quit string
+	up, down, left, right, confirm, back, pageUp, pageDown, search, clearSearch, reload, openConfig, checkUpdate, openDocument, rawView, rawNextTable, rawPrevTable, export, filterHelp, analytics, analyticsNext, analyticsPrev, analyticsBucket, analyticsView, analyticsFocus, detailUp, detailDown, detailPageUp, detailPageDown, detailTop, detailBottom, quit, theme string
 }
 
 func resolveKeys(k config.Keybinds) resolvedKeys {
-	return resolvedKeys{k.Up, k.Down, k.Left, k.Right, k.Confirm, k.Back, k.PageUp, k.PageDown, k.Search, k.ClearSearch, k.Reload, k.OpenConfig, k.CheckUpdate, k.OpenDocument, k.RawView, k.RawNextTable, k.RawPrevTable, k.Export, k.FilterHelp, k.Analytics, k.AnalyticsNext, k.AnalyticsPrev, k.AnalyticsBucket, k.AnalyticsView, k.AnalyticsFocus, k.DetailUp, k.DetailDown, k.DetailPageUp, k.DetailPageDown, k.DetailTop, k.DetailBottom, k.Quit}
+	return resolvedKeys{k.Up, k.Down, k.Left, k.Right, k.Confirm, k.Back, k.PageUp, k.PageDown, k.Search, k.ClearSearch, k.Reload, k.OpenConfig, k.CheckUpdate, k.OpenDocument, k.RawView, k.RawNextTable, k.RawPrevTable, k.Export, k.FilterHelp, k.Analytics, k.AnalyticsNext, k.AnalyticsPrev, k.AnalyticsBucket, k.AnalyticsView, k.AnalyticsFocus, k.DetailUp, k.DetailDown, k.DetailPageUp, k.DetailPageDown, k.DetailTop, k.DetailBottom, k.Quit, k.Theme}
 }
 
 func New(cfg *config.Config, sf scanFn, origin, version, repoDir string) Model {
+	applyTheme(cfg)
 	filterInput := textinput.New()
 	filterInput.Placeholder = "filter: text agent:opencode project:crosspile from:2026-05-01 q:prompt a:response"
 	filterInput.CharLimit = 512
@@ -157,6 +163,7 @@ func New(cfg *config.Config, sf scanFn, origin, version, repoDir string) Model {
 
 	updateState := updatecheck.ResolveState(updatecheck.BakedInfo{Origin: origin, Version: version, RepoDir: repoDir})
 	configPath, _ := config.ConfigPath()
+	themeNames, _ := config.ThemeNames(cfg)
 	m := Model{
 		cfg:              cfg,
 		scanFn:           sf,
@@ -164,6 +171,7 @@ func New(cfg *config.Config, sf scanFn, origin, version, repoDir string) Model {
 		filterInput:      filterInput,
 		locInput:         locInput,
 		configPath:       configPath,
+		themeNames:       themeNames,
 		updateOrigin:     firstNonEmpty(updateState.Origin, cfg.Updates.RemoteURL),
 		updateRepoDir:    updateState.RepoDir,
 		currentVersion:   updateState.InstalledCommit,
@@ -266,6 +274,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		oldAgents := agentsSignature(m.cfg)
 		m.cfg = msg.cfg
 		m.keys = resolveKeys(msg.cfg.Keybinds)
+		applyTheme(msg.cfg)
+		m.themeNames, _ = config.ThemeNames(msg.cfg)
 		m.configModTime = fileModTime(m.configPath)
 		m.status = "config reloaded"
 		if oldLocations != locationsSignature(msg.cfg) || oldAgents != agentsSignature(msg.cfg) {
@@ -303,6 +313,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateAnalytics(key)
 		case modeRawData:
 			return m.updateRaw(key)
+		case modeTheme:
+			return m.updateTheme(key)
 		default:
 			return m.updateNormal(key)
 		}
@@ -358,6 +370,61 @@ func (m Model) updateSearch(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func applyTheme(cfg *config.Config) {
+	theme := config.ResolveTheme(cfg)
+	ui.ConfigureTheme(theme.Colors, theme.Terminal)
+}
+
+func (m Model) applySelectedTheme() (tea.Model, tea.Cmd) {
+	if m.themeCursor < 0 || m.themeCursor >= len(m.themeNames) {
+		m.mode = modeNormal
+		return m, nil
+	}
+	name := m.themeNames[m.themeCursor]
+	if err := config.SetThemeName(name); err != nil {
+		m.err = fmt.Sprintf("Could not save theme: %v", err)
+		m.mode = modeError
+		return m, nil
+	}
+	m.cfg.Themes.ThemeName = name
+	applyTheme(m.cfg)
+	m.mode = modeNormal
+	m.status = "theme: " + name
+	return m, tea.Tick(1500*time.Millisecond, func(_ time.Time) tea.Msg { return statusMsg("") })
+}
+
+func (m *Model) clampThemeCursor() {
+	if len(m.themeNames) == 0 {
+		m.themeCursor = 0
+		return
+	}
+	if m.themeCursor < 0 {
+		m.themeCursor = 0
+	}
+	if m.themeCursor >= len(m.themeNames) {
+		m.themeCursor = len(m.themeNames) - 1
+	}
+}
+
+func (m Model) updateTheme(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case m.keys.back, m.keys.clearSearch, m.keys.quit, "esc":
+		m.mode = modeNormal
+		return m, nil
+	case m.keys.up:
+		m.themeCursor--
+		m.clampThemeCursor()
+		return m, nil
+	case m.keys.down:
+		m.themeCursor++
+		m.clampThemeCursor()
+		return m, nil
+	case m.keys.confirm:
+		return m.applySelectedTheme()
+	}
+	return m, nil
+}
+
 func (m Model) updateNormal(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case m.keys.quit:
@@ -382,6 +449,17 @@ func (m Model) updateNormal(key string) (tea.Model, tea.Cmd) {
 		return m, m.scanCmd()
 	case m.keys.openConfig:
 		return m, m.openConfigCmd()
+	case m.keys.theme:
+		m.themeNames, _ = config.ThemeNames(m.cfg)
+		m.themeCursor = 0
+		for i, name := range m.themeNames {
+			if name == m.cfg.Themes.ThemeName {
+				m.themeCursor = i
+				break
+			}
+		}
+		m.mode = modeTheme
+		return m, nil
 	case m.keys.checkUpdate:
 		m.status = "checking for updates..."
 		return m, m.checkUpdateCmd()

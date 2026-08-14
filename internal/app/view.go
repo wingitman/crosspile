@@ -42,8 +42,33 @@ func (m Model) View() string {
 		b.WriteString(m.renderAnalytics())
 	case modeRawData:
 		b.WriteString(m.renderRawView())
+	case modeTheme:
+		b.WriteString(m.renderThemeScreen())
 	default:
 		b.WriteString(m.renderMain())
+	}
+	return b.String()
+}
+
+func (m Model) renderThemeScreen() string {
+	var b strings.Builder
+	b.WriteString(ui.StylePrimary.Render("Themes"))
+	b.WriteString("\n")
+	b.WriteString(ui.StyleMuted.Render("Choose a theme and press Enter. Esc cancels."))
+	b.WriteString("\n\n")
+	for i, name := range m.themeNames {
+		line := "  " + name
+		if name == m.cfg.Themes.ThemeName {
+			line += ui.StyleMuted.Render("  (current)")
+		}
+		if i == m.themeCursor {
+			line = ui.StyleSelector.Render("▶ ") + line[2:]
+			if lipgloss.Width(line) < m.width {
+				line += strings.Repeat(" ", m.width-lipgloss.Width(line))
+			}
+			line = ui.StyleSelected.Render(line)
+		}
+		b.WriteString(line + "\n")
 	}
 	return b.String()
 }

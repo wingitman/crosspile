@@ -19,6 +19,7 @@ type Config struct {
 	Apps      Apps       `toml:"apps"`
 	Output    Output     `toml:"output"`
 	Keybinds  Keybinds   `toml:"keybinds"`
+	Themes    Themes     `toml:"themes"`
 }
 
 type Location struct {
@@ -84,6 +85,7 @@ type Keybinds struct {
 	DetailTop       string `toml:"detail_top"`
 	DetailBottom    string `toml:"detail_bottom"`
 	Quit            string `toml:"quit"`
+	Theme           string `toml:"theme"`
 }
 
 func Default() *Config {
@@ -134,6 +136,11 @@ func Default() *Config {
 			DetailTop:       "g",
 			DetailBottom:    "G",
 			Quit:            "q",
+			Theme:           "T",
+		},
+		Themes: Themes{
+			ThemeName: "terminal",
+			ThemeFile: defaultThemeFile(),
 		},
 	}
 }
@@ -200,6 +207,7 @@ func Load() (*Config, error) {
 		if err := Write(path, cfg); err != nil {
 			return cfg, err
 		}
+		_ = EnsureThemesFile(cfg)
 		return cfg, nil
 	} else if err != nil {
 		return cfg, err
@@ -219,6 +227,7 @@ func Load() (*Config, error) {
 	if migrate {
 		_ = Write(path, cfg)
 	}
+	_ = EnsureThemesFile(cfg)
 	return cfg, nil
 }
 
@@ -323,6 +332,24 @@ func BuildTOML(cfg *Config) string {
 	b.WriteString("detail_top    = " + quote(cfg.Keybinds.DetailTop) + "\n")
 	b.WriteString("detail_bottom = " + quote(cfg.Keybinds.DetailBottom) + "\n")
 	b.WriteString("quit         = " + quote(cfg.Keybinds.Quit) + "\n")
+	b.WriteString("theme        = " + quote(cfg.Keybinds.Theme) + "\n\n")
+	b.WriteString("[themes]\n")
+	b.WriteString("theme_name = " + quote(cfg.Themes.ThemeName) + "   # terminal, or a named theme from theme_file\n")
+	b.WriteString("theme_file = " + quote(cfg.Themes.ThemeFile) + "   # shared Delbysoft theme file\n")
+	b.WriteString("# Optional overrides applied after the selected theme.\n")
+	b.WriteString("# primary = \"#7C9EF0\"\n")
+	b.WriteString("# accent = \"#F0A47C\"\n")
+	b.WriteString("# muted = \"#666688\"\n")
+	b.WriteString("# error = \"#F07C7C\"\n")
+	b.WriteString("# success = \"#7CF09C\"\n")
+	b.WriteString("# border = \"#444466\"\n")
+	b.WriteString("# selected_background = \"#2A2A4A\"\n")
+	b.WriteString("# selected_foreground = \"#EEEEFF\"\n")
+	b.WriteString("# header_background = \"#1A1A2E\"\n")
+	b.WriteString("# hint_key = \"#FFE66D\"\n")
+	b.WriteString("# brand_primary = \"#FFFFFF\"\n")
+	b.WriteString("# brand_secondary = \"#5865F2\"\n")
+	b.WriteString("# selector = \"#FFFFFF\"\n")
 	return b.String()
 }
 
@@ -443,6 +470,15 @@ func applyDefaults(cfg *Config) {
 	if cfg.Keybinds.Quit == "" {
 		cfg.Keybinds.Quit = d.Keybinds.Quit
 	}
+	if cfg.Keybinds.Theme == "" {
+		cfg.Keybinds.Theme = d.Keybinds.Theme
+	}
+	if cfg.Themes.ThemeName == "" {
+		cfg.Themes.ThemeName = d.Themes.ThemeName
+	}
+	if cfg.Themes.ThemeFile == "" {
+		cfg.Themes.ThemeFile = d.Themes.ThemeFile
+	}
 }
 
 func applyMigrationDefaults(path string, cfg *Config) {
@@ -466,7 +502,7 @@ func needsMigration(path string) bool {
 		return false
 	}
 	s := string(data)
-	for _, required := range []string{"[agents]", "[display]", "[updates]", "[apps]", "[output]", "[keybinds]", "preview_lines", "open_config", "check_update", "open_document", "raw_view", "raw_next_table", "filter_help", "analytics", "analytics_view", "analytics_focus", "detail_down", "confirm", "remote_url"} {
+	for _, required := range []string{"[agents]", "[display]", "[updates]", "[apps]", "[output]", "[keybinds]", "[themes]", "preview_lines", "open_config", "check_update", "open_document", "raw_view", "raw_next_table", "filter_help", "analytics", "analytics_view", "analytics_focus", "detail_down", "confirm", "remote_url", "theme_name"} {
 		if !strings.Contains(s, required) {
 			return true
 		}
