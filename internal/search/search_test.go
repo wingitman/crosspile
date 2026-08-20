@@ -102,3 +102,11 @@ func TestSummaryDescribesParsedFilters(t *testing.T) {
 		}
 	}
 }
+
+func TestFilterHealthAndIssues(t *testing.T) {
+	sessions := []model.Session{{ID: "bad", Health: "corrupted", Issues: []string{"invalid JSON"}}, {ID: "ok", Health: "healthy"}}
+	got := Filter(sessions, "health:corrupt issue:json")
+	if len(got) != 1 || got[0].ID != "bad" {
+		t.Fatalf("unexpected health filter result: %#v", got)
+	}
+}

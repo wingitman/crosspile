@@ -11,6 +11,8 @@ import (
 	"github.com/wingitman/crosspile/internal/config"
 	"github.com/wingitman/crosspile/internal/model"
 	"github.com/wingitman/crosspile/internal/scanner/claude"
+	"github.com/wingitman/crosspile/internal/scanner/codewhale"
+	"github.com/wingitman/crosspile/internal/scanner/crush"
 	"github.com/wingitman/crosspile/internal/scanner/generic"
 	"github.com/wingitman/crosspile/internal/scanner/opencode"
 )
@@ -27,7 +29,7 @@ func Scan(ctx context.Context, cfg *config.Config) Result {
 	locations := locationPaths(cfg)
 
 	if cfg.Agents.OpenCode {
-		sessions, warnings := opencode.Scan(ctx, locations)
+		sessions, warnings := opencode.ScanMetadata(ctx, locations)
 		out.Sessions = append(out.Sessions, sessions...)
 		out.Warnings = append(out.Warnings, warnings...)
 	}
@@ -41,6 +43,16 @@ func Scan(ctx context.Context, cfg *config.Config) Result {
 		out.Sessions = append(out.Sessions, sessions...)
 		out.Warnings = append(out.Warnings, warnings...)
 	}
+	if cfg.Agents.CodeWhale {
+		sessions, warnings := codewhale.Scan(ctx, locations)
+		out.Sessions = append(out.Sessions, sessions...)
+		out.Warnings = append(out.Warnings, warnings...)
+	}
+	if cfg.Agents.Crush {
+		sessions, warnings := crush.Scan(ctx, locations)
+		out.Sessions = append(out.Sessions, sessions...)
+		out.Warnings = append(out.Warnings, warnings...)
+	}
 
 	out.Sessions = dedupe(out.Sessions)
 	annotateLocations(out.Sessions, cfg.Locations)
@@ -48,6 +60,11 @@ func Scan(ctx context.Context, cfg *config.Config) Result {
 		return out.Sessions[i].UpdatedAt.After(out.Sessions[j].UpdatedAt)
 	})
 	return out
+}
+
+// Hydrate loads expensive transcript data after metadata has reached the UI.
+func Hydrate(ctx context.Context, sessions []model.Session) ([]model.Session, []string) {
+	return opencode.Hydrate(ctx, sessions)
 }
 
 func annotateLocations(sessions []model.Session, locations []config.Location) {

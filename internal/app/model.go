@@ -39,6 +39,10 @@ const (
 )
 
 type scanMsg scanner.Result
+type hydrateMsg struct {
+	sessions []model.Session
+	warnings []string
+}
 type errorMsg string
 type configEditorClosedMsg struct{}
 type configReloadedMsg struct {
@@ -214,6 +218,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyFilter()
 		m.mode = modeNormal
 		m.status = fmt.Sprintf("scanned %d sessions", len(m.sessions))
+		return m, m.hydrateCmd()
+	case hydrateMsg:
+		for _, hydrated := range msg.sessions {
+			for i := range m.sessions {
+				if m.sessions[i].ID == hydrated.ID && m.sessions[i].Source == hydrated.Source {
+					m.sessions[i] = hydrated
+					break
+				}
+			}
+		}
+		m.warnings = append(m.warnings, msg.warnings...)
+		m.applyFilter()
+		if len(msg.sessions) > 0 {
+			m.status = "transcripts hydrated"
+		}
 	case errorMsg:
 		m.scanning = false
 		m.mode = modeError
@@ -621,6 +640,14 @@ func (m Model) scanCmd() tea.Cmd {
 	}
 }
 
+func (m Model) hydrateCmd() tea.Cmd {
+	sessions := append([]model.Session(nil), m.sessions...)
+	return func() tea.Msg {
+		loaded, warnings := scanner.Hydrate(context.Background(), sessions)
+		return hydrateMsg{sessions: loaded, warnings: warnings}
+	}
+}
+
 func (m *Model) applyFilter() {
 	m.filtered = search.Filter(m.sessions, m.filter)
 	if m.cursor >= len(m.filtered) {
@@ -947,7 +974,7 @@ func locationsSignature(cfg *config.Config) string {
 }
 
 func agentsSignature(cfg *config.Config) string {
-	return fmt.Sprintf("%t:%t:%t", cfg.Agents.OpenCode, cfg.Agents.Claude, cfg.Agents.Generic)
+	return fmt.Sprintf("%t:%t:%t:%t:%t", cfg.Agents.OpenCode, cfg.Agents.Claude, cfg.Agents.Generic, cfg.Agents.CodeWhale, cfg.Agents.Crush)
 }
 
 func firstNonEmpty(values ...string) string {

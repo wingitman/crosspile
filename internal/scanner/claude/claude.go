@@ -82,16 +82,20 @@ func parseFile(path string) (model.Session, error) {
 	}
 	defer f.Close()
 
-	s := model.Session{Agent: "claude", Source: path, SourceKind: "jsonl", ID: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))}
+	s := model.Session{Agent: "claude", Source: path, SourceKind: "jsonl", ID: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), Health: "healthy"}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1024), 4*1024*1024)
+	lineNumber := 0
 	for scanner.Scan() {
+		lineNumber++
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
 		var ev event
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			s.Health = "degraded"
+			s.Issues = appendUnique(s.Issues, fmt.Sprintf("invalid JSON at line %d", lineNumber))
 			continue
 		}
 		if ev.SessionID != "" {
@@ -129,6 +133,15 @@ func parseFile(path string) (model.Session, error) {
 		s.Title = "Claude session " + s.ID
 	}
 	return s, nil
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func eventMessage(ev event, at time.Time) model.Message {

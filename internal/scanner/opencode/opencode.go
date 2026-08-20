@@ -69,16 +69,7 @@ type partData struct {
 }
 
 func Scan(ctx context.Context, locations []string) ([]model.Session, []string) {
-	var path string
-	for _, candidate := range dbPaths() {
-		if candidate == "" {
-			continue
-		}
-		if _, err := os.Stat(candidate); err == nil {
-			path = candidate
-			break
-		}
-	}
+	path := existingDBPath()
 	if path == "" {
 		return nil, nil
 	}
@@ -90,7 +81,64 @@ func Scan(ctx context.Context, locations []string) ([]model.Session, []string) {
 	return sessions, nil
 }
 
+// ScanMetadata reads only the session table so the first screen does not wait
+// for every transcript part in a large database.
+func ScanMetadata(ctx context.Context, locations []string) ([]model.Session, []string) {
+	path := existingDBPath()
+	if path == "" {
+		return nil, nil
+	}
+	sessions, err := scanDBWithHydration(ctx, path, locations, false)
+	if err != nil {
+		return nil, []string{fmt.Sprintf("opencode: %v", err)}
+	}
+	return sessions, nil
+}
+
+func Hydrate(ctx context.Context, sessions []model.Session) ([]model.Session, []string) {
+	bySource := map[string][]model.Session{}
+	for _, s := range sessions {
+		if s.SourceKind == "sqlite" && !s.TranscriptHydrated {
+			bySource[s.Source] = append(bySource[s.Source], s)
+		}
+	}
+	var out []model.Session
+	var warnings []string
+	for path, candidates := range bySource {
+		full, err := scanDBWithHydration(ctx, path, nil, true)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("opencode: %v", err))
+			continue
+		}
+		wanted := map[string]bool{}
+		for _, s := range candidates {
+			wanted[s.ID] = true
+		}
+		for _, s := range full {
+			if wanted[s.ID] {
+				out = append(out, s)
+			}
+		}
+	}
+	return out, warnings
+}
+
+func existingDBPath() string {
+	for _, candidate := range dbPaths() {
+		if candidate != "" {
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
 func scanDB(ctx context.Context, path string, locations []string) ([]model.Session, error) {
+	return scanDBWithHydration(ctx, path, locations, true)
+}
+
+func scanDBWithHydration(ctx context.Context, path string, locations []string, hydrate bool) ([]model.Session, error) {
 	dsn := sqliteURI(path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -125,30 +173,38 @@ func scanDB(ctx context.Context, path string, locations []string) ([]model.Sessi
 	for _, r := range sessionRows {
 		ids = append(ids, r.id)
 	}
-	messages, err := loadMessages(ctx, db, ids)
-	if err != nil {
-		return nil, err
-	}
-	parts, err := loadParts(ctx, db, ids)
-	if err != nil {
-		return nil, err
+	messages := map[string][]messageRow{}
+	parts := map[string][]partRow{}
+	if hydrate {
+		messages, err = loadMessages(ctx, db, ids)
+		if err != nil {
+			return nil, err
+		}
+		parts, err = loadParts(ctx, db, ids)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	out := make([]model.Session, 0, len(sessionRows))
 	for _, r := range sessionRows {
+		health, issues := sessionHealth(r.title)
 		s := model.Session{
-			ID:         r.id,
-			Title:      r.title,
-			Agent:      "opencode",
-			Directory:  r.directory,
-			Project:    filepath.Base(r.directory),
-			CreatedAt:  unixish(r.timeCreated),
-			UpdatedAt:  unixish(r.timeUpdated),
-			Source:     path,
-			SourceKind: "sqlite",
-			Context:    r.directory,
-			RawRefs:    map[string][]string{"session": []string{r.id}},
-			Metadata:   map[string]string{"source_table": "session"},
+			ID:                 r.id,
+			Title:              r.title,
+			Agent:              "opencode",
+			Directory:          r.directory,
+			Project:            filepath.Base(r.directory),
+			CreatedAt:          unixish(r.timeCreated),
+			UpdatedAt:          unixish(r.timeUpdated),
+			Source:             path,
+			SourceKind:         "sqlite",
+			Context:            r.directory,
+			RawRefs:            map[string][]string{"session": []string{r.id}},
+			Metadata:           map[string]string{"source_table": "session"},
+			Health:             health,
+			Issues:             issues,
+			TranscriptHydrated: hydrate,
 		}
 
 		for _, mr := range messages[r.id] {
@@ -174,12 +230,19 @@ func scanDB(ctx context.Context, path string, locations []string) ([]model.Sessi
 				s.TokensReasoning += md.Tokens.Reasoning
 				s.TokensCacheRead += md.Tokens.Cache.Read
 				s.TokensCacheWrite += md.Tokens.Cache.Write
+			} else {
+				s.Health = "degraded"
+				s.Issues = appendUnique(s.Issues, "invalid message JSON")
 			}
 			if msg.Role == "" {
 				msg.Role = "unknown"
 			}
 			for _, pr := range parts[mr.id] {
-				part := parsePart(pr.data)
+				part, issue := parsePart(pr.data)
+				if issue != "" {
+					s.Health = "degraded"
+					s.Issues = appendUnique(s.Issues, issue)
+				}
 				if part.Type == "tool" && part.Meta != "" {
 					s.Tools = appendUnique(s.Tools, part.Meta)
 				}
@@ -198,6 +261,13 @@ func scanDB(ctx context.Context, path string, locations []string) ([]model.Sessi
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+func sessionHealth(title string) (string, []string) {
+	if strings.HasPrefix(strings.TrimSpace(title), "New session -") {
+		return "degraded", []string{"default title; title generation may have failed"}
+	}
+	return "healthy", nil
 }
 
 func loadMessages(ctx context.Context, db *sql.DB, sessionIDs []string) (map[string][]messageRow, error) {
@@ -254,10 +324,10 @@ func loadParts(ctx context.Context, db *sql.DB, sessionIDs []string) (map[string
 	return out, nil
 }
 
-func parsePart(raw string) model.Part {
+func parsePart(raw string) (model.Part, string) {
 	var pd partData
 	if json.Unmarshal([]byte(raw), &pd) != nil {
-		return model.Part{Type: "raw", Text: raw}
+		return model.Part{Type: "raw", Text: raw}, "invalid part JSON"
 	}
 	part := model.Part{Type: pd.Type}
 	switch pd.Type {
@@ -280,7 +350,7 @@ func parsePart(raw string) model.Part {
 		part.Text = pd.Text
 		part.Meta = firstNonEmpty(pd.Tool, pd.Title, pd.File)
 	}
-	return part
+	return part, ""
 }
 
 func summarizeTool(pd partData) string {

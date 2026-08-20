@@ -55,3 +55,10 @@ func TestScanDBReadsCurrentOpenCodeSchema(t *testing.T) {
 		t.Fatalf("unexpected messages: %#v", s.Messages)
 	}
 }
+
+func TestSessionHealthFlagsDefaultTitle(t *testing.T) {
+	health, issues := sessionHealth("New session - 2026-08-19T20:18:09.653Z")
+	if health != "degraded" || len(issues) != 1 {
+		t.Fatalf("unexpected health: %q %#v", health, issues)
+	}
+}

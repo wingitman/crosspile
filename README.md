@@ -43,6 +43,8 @@ path = "~/Projects"
 
 Config edits are reloaded automatically while the TUI is running. If locations or enabled agents change, `crosspile` rescans.
 
+Supported local agents currently include OpenCode, Claude Code, CodeWhale, and Crush. OpenCode sessions are shown from their session metadata first, then transcripts are hydrated in the background so large local databases do not block the initial screen. Crush SQLite databases are discovered from its project registry and XDG data directories.
+
 ## Updates
 
 `crosspile` follows the same git-backed updater design as the other local tools:
@@ -69,6 +71,11 @@ Structured filters:
 - `to:2026-05-17`
 - `q:prompt text`
 - `a:response text`
+- `health:healthy|degraded|corrupted|errored`
+- `issue:title`
+- `issue:parse`
+
+Sessions with malformed records, unavailable database tables, invalid message parts, or missing generated metadata remain visible with a health marker so their raw source can be recovered.
 
 ## Build
 

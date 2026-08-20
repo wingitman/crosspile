@@ -208,6 +208,10 @@ func fieldValues(s model.Session, key string) []string {
 		return s.Files
 	case "source":
 		return []string{s.SourceKind, s.Source}
+	case "health", "status":
+		return []string{s.Health}
+	case "issue", "issues", "error", "errors":
+		return s.Issues
 	case "q", "question", "prompt":
 		return []string{s.PromptText()}
 	case "a", "answer", "response":

@@ -28,9 +28,11 @@ type Location struct {
 }
 
 type Agents struct {
-	OpenCode bool `toml:"opencode"`
-	Claude   bool `toml:"claude"`
-	Generic  bool `toml:"generic"`
+	OpenCode  bool `toml:"opencode"`
+	Claude    bool `toml:"claude"`
+	Generic   bool `toml:"generic"`
+	CodeWhale bool `toml:"codewhale"`
+	Crush     bool `toml:"crush"`
 }
 
 type Display struct {
@@ -91,9 +93,11 @@ type Keybinds struct {
 func Default() *Config {
 	return &Config{
 		Agents: Agents{
-			OpenCode: true,
-			Claude:   true,
-			Generic:  true,
+			OpenCode:  true,
+			Claude:    true,
+			Generic:   true,
+			CodeWhale: true,
+			Crush:     true,
 		},
 		Display: Display{
 			PreviewLines: 12,
@@ -288,7 +292,9 @@ func BuildTOML(cfg *Config) string {
 	b.WriteString("[agents]\n")
 	b.WriteString(fmt.Sprintf("opencode = %t\n", cfg.Agents.OpenCode))
 	b.WriteString(fmt.Sprintf("claude   = %t\n", cfg.Agents.Claude))
-	b.WriteString(fmt.Sprintf("generic  = %t\n\n", cfg.Agents.Generic))
+	b.WriteString(fmt.Sprintf("generic  = %t\n", cfg.Agents.Generic))
+	b.WriteString(fmt.Sprintf("codewhale = %t\n", cfg.Agents.CodeWhale))
+	b.WriteString(fmt.Sprintf("crush    = %t\n\n", cfg.Agents.Crush))
 	b.WriteString("[display]\n")
 	b.WriteString(fmt.Sprintf("preview_lines = %d\n\n", cfg.Display.PreviewLines))
 	b.WriteString("[updates]\n")
@@ -494,6 +500,12 @@ func applyMigrationDefaults(path string, cfg *Config) {
 	if !strings.Contains(s, "auto_prompt") {
 		cfg.Updates.AutoPrompt = d.Updates.AutoPrompt
 	}
+	if !strings.Contains(s, "codewhale") {
+		cfg.Agents.CodeWhale = d.Agents.CodeWhale
+	}
+	if !strings.Contains(s, "crush") {
+		cfg.Agents.Crush = d.Agents.Crush
+	}
 }
 
 func needsMigration(path string) bool {
@@ -502,7 +514,7 @@ func needsMigration(path string) bool {
 		return false
 	}
 	s := string(data)
-	for _, required := range []string{"[agents]", "[display]", "[updates]", "[apps]", "[output]", "[keybinds]", "[themes]", "preview_lines", "open_config", "check_update", "open_document", "raw_view", "raw_next_table", "filter_help", "analytics", "analytics_view", "analytics_focus", "detail_down", "confirm", "remote_url", "theme_name"} {
+	for _, required := range []string{"[agents]", "codewhale", "crush", "[display]", "[updates]", "[apps]", "[output]", "[keybinds]", "[themes]", "preview_lines", "open_config", "check_update", "open_document", "raw_view", "raw_next_table", "filter_help", "analytics", "analytics_view", "analytics_focus", "detail_down", "confirm", "remote_url", "theme_name"} {
 		if !strings.Contains(s, required) {
 			return true
 		}

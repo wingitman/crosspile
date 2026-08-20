@@ -182,6 +182,9 @@ func (m Model) renderList(width, height int) []string {
 		}
 		date := shortTime(s.UpdatedAt)
 		label := fmt.Sprintf("%s%-9s %-10s %s", cursor, s.Agent, s.ProjectName(), truncate(s.Title, width-27))
+		if !s.Healthy() {
+			label = "! " + strings.TrimPrefix(label, "  ")
+		}
 		line := style.Render(truncate(label, width-10)) + " " + ui.StyleMuted.Render(date)
 		lines = append(lines, line)
 	}
@@ -210,6 +213,12 @@ func (m Model) renderDetailLines(width int) []string {
 	var lines []string
 	lines = append(lines, ui.StylePrimary.Render("  "+truncate(s.Title, width-2)))
 	lines = append(lines, "  "+ui.StyleMuted.Render(fmt.Sprintf("%s  %s  %s", s.Agent, s.ID, formatTime(s.UpdatedAt))))
+	if !s.Healthy() {
+		lines = append(lines, "  "+ui.StyleError.Render("health:"+s.Health+" "+strings.Join(s.Issues, "; ")))
+	}
+	if s.SourceKind == "sqlite" && !s.TranscriptHydrated {
+		lines = append(lines, "  "+ui.StyleMuted.Render("transcript: hydrating in background"))
+	}
 	meta := []string{s.ProjectName()}
 	if s.Mode != "" {
 		meta = append(meta, "mode:"+s.Mode)
@@ -439,6 +448,7 @@ func (m Model) renderFilterHelp() string {
 		"  location:Work        configured location name/path",
 		"  model:gpt provider:openai mode:build context:/Work",
 		"  tool:bash skill:omarchy file:main.go source:sqlite",
+		"  health:healthy|degraded|corrupted|errored issue:parse",
 		"",
 		"  Text and numeric filters:",
 		"  q:\"build a TUI\"      user prompt text",

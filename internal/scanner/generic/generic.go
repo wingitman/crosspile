@@ -48,7 +48,7 @@ func Scan(ctx context.Context, locations []string) ([]model.Session, []string) {
 				warnings = append(warnings, fmt.Sprintf("generic: %s: %v", path, err))
 				return nil
 			}
-			if len(s.Messages) > 0 {
+			if len(s.Messages) > 0 || !s.Healthy() {
 				out = append(out, s)
 			}
 			return nil
@@ -81,10 +81,19 @@ func parseJSONL(path string) (model.Session, error) {
 	}
 	defer f.Close()
 	s := baseSession(path)
+	s.Health = "healthy"
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1024), 2*1024*1024)
+	lineNumber := 0
 	for scanner.Scan() {
-		addRecord(&s, scanner.Bytes())
+		lineNumber++
+		raw := scanner.Bytes()
+		if !json.Valid(raw) {
+			s.Health = "degraded"
+			s.Issues = appendUnique(s.Issues, fmt.Sprintf("invalid JSON at line %d", lineNumber))
+			continue
+		}
+		addRecord(&s, raw)
 	}
 	return finalize(s), scanner.Err()
 }
@@ -102,8 +111,22 @@ func parseJSON(path string) (model.Session, error) {
 		}
 		return finalize(s), nil
 	}
-	addRecord(&s, data)
+	if !json.Valid(data) {
+		s.Health = "corrupted"
+		s.Issues = appendUnique(s.Issues, "invalid JSON")
+	} else {
+		addRecord(&s, data)
+	}
 	return finalize(s), nil
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func baseSession(path string) model.Session {

@@ -7,35 +7,38 @@ import (
 )
 
 type Session struct {
-	ID               string
-	Title            string
-	Agent            string
-	Mode             string
-	Context          string
-	Model            string
-	Provider         string
-	Project          string
-	Directory        string
-	LocationName     string
-	LocationPath     string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	Messages         []Message
-	Todos            []Todo
-	Files            []string
-	Tools            []string
-	Skills           []string
-	Cost             float64
-	TokensIn         int64
-	TokensOut        int64
-	TokensReasoning  int64
-	TokensCacheRead  int64
-	TokensCacheWrite int64
-	Source           string
-	SourceKind       string
-	RawRefs          map[string][]string
-	Metadata         map[string]string
-	Warnings         []string
+	ID                 string
+	Title              string
+	Agent              string
+	Mode               string
+	Context            string
+	Model              string
+	Provider           string
+	Project            string
+	Directory          string
+	LocationName       string
+	LocationPath       string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	Messages           []Message
+	Todos              []Todo
+	Files              []string
+	Tools              []string
+	Skills             []string
+	Cost               float64
+	TokensIn           int64
+	TokensOut          int64
+	TokensReasoning    int64
+	TokensCacheRead    int64
+	TokensCacheWrite   int64
+	Source             string
+	SourceKind         string
+	RawRefs            map[string][]string
+	Metadata           map[string]string
+	Warnings           []string
+	Health             string
+	Issues             []string
+	TranscriptHydrated bool
 }
 
 type Message struct {
@@ -88,6 +91,12 @@ func (s Session) AllText() string {
 	b.WriteString(s.LocationName)
 	b.WriteString(" ")
 	b.WriteString(s.LocationPath)
+	b.WriteString(" ")
+	b.WriteString(s.Health)
+	for _, issue := range s.Issues {
+		b.WriteString(" ")
+		b.WriteString(issue)
+	}
 	for _, msg := range s.Messages {
 		b.WriteString(" ")
 		b.WriteString(msg.Role)
@@ -120,6 +129,8 @@ func (s Session) AllText() string {
 	}
 	return b.String()
 }
+
+func (s Session) Healthy() bool { return s.Health == "" || s.Health == "healthy" }
 
 func (s Session) TotalTokens() int64 {
 	return s.TokensIn + s.TokensOut + s.TokensReasoning + s.TokensCacheRead + s.TokensCacheWrite
