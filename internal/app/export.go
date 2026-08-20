@@ -39,20 +39,60 @@ func (m Model) exportRawTableCmd(format string) tea.Cmd {
 }
 
 func (m Model) exportAnalyticsCmd(format string) tea.Cmd {
-	dimension := analytics.Dimensions[m.analyticsDimension]
-	bucket := analytics.Buckets[m.analyticsBucket]
-	selected := selectedAnalyticsMetrics(m.analyticsMetrics)
-	rows := analytics.Build(m.filtered, dimension, bucket)
-	total := analytics.Totals(m.filtered)
+	config := m.pivotConfig()
+	table := analytics.BuildPivot(m.filtered, config)
+	dimension := analytics.DimensionTimeline
+	if len(config.Rows) > 0 {
+		dimension = config.Rows[0]
+	}
+	bucket := config.Period
 	exportDir := m.cfg.Output.ExportDir
 	return func() tea.Msg {
-		columns, data := analyticsExportData(dimension, selected, rows, total)
+		columns, data := pivotAnalyticsExportData(table)
 		path, err := writeAnalyticsExport(exportDir, dimension, bucket, format, columns, data)
 		if err != nil {
 			return errorMsg(err.Error())
 		}
 		return exportedStatus(path, revealExportFile(path))
 	}
+}
+
+func pivotAnalyticsExportData(table analytics.PivotTable) ([]string, [][]string) {
+	metrics := table.Config.Values
+	if len(metrics) == 0 {
+		metrics = []analytics.Metric{analytics.MetricSessions}
+	}
+	columns := []string{"row"}
+	for _, header := range table.Columns {
+		for _, metric := range metrics {
+			label := header.Key
+			if label == "" {
+				label = "(all)"
+			}
+			columns = append(columns, label+"/"+metric.String())
+		}
+	}
+	if len(table.Columns) == 0 {
+		for _, metric := range metrics {
+			columns = append(columns, "(all)/"+metric.String())
+		}
+	}
+	rows := make([][]string, 0, len(table.Rows)+1)
+	for r, header := range table.Rows {
+		row := []string{header.Key}
+		for c := range table.Columns {
+			for _, metric := range metrics {
+				row = append(row, analytics.Value(table.Cells[r][c].Row, metric))
+			}
+		}
+		rows = append(rows, row)
+	}
+	grand := []string{"grand total"}
+	for _, metric := range metrics {
+		grand = append(grand, analytics.Value(table.GrandTotal, metric))
+	}
+	rows = append(rows, grand)
+	return columns, rows
 }
 
 func analyticsExportData(dimension analytics.Dimension, metrics []analytics.Metric, rows []analytics.Row, total analytics.Row) ([]string, [][]string) {

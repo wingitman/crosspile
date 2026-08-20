@@ -138,15 +138,25 @@ type Model struct {
 	rawRowOffset int
 	rawColOffset int
 
-	analyticsDimension    int
-	analyticsBucket       int
-	analyticsView         int
-	analyticsFocus        int
-	analyticsMetricCursor int
-	analyticsMetrics      []bool
-	analyticsConfigOpen   bool
-	analyticsRowCursor    int
-	analyticsColumnOffset int
+	analyticsDimension         int
+	analyticsBucket            int
+	analyticsView              int
+	analyticsFocus             int
+	analyticsMetricCursor      int
+	analyticsMetrics           []bool
+	analyticsConfigOpen        bool
+	analyticsRowCursor         int
+	analyticsColumnOffset      int
+	analyticsPivotConfig       analytics.PivotConfig
+	analyticsPivotFocus        int
+	analyticsPivotCursor       int
+	analyticsPlacementOpen     bool
+	analyticsPlacementCursor   int
+	analyticsPlacementField    analytics.Dimension
+	analyticsPivotRowOffset    int
+	analyticsPivotColumnOffset int
+	analyticsPivotRowCursor    int
+	analyticsPivotColCursor    int
 }
 
 type resolvedKeys struct {
@@ -183,6 +193,12 @@ func New(cfg *config.Config, sf scanFn, origin, version, repoDir string) Model {
 		updateRepoDir:    updateState.RepoDir,
 		currentVersion:   updateState.InstalledCommit,
 		analyticsMetrics: analytics.DefaultSelectedMetrics(),
+		analyticsPivotConfig: analytics.PivotConfig{
+			Rows:    []analytics.Dimension{analytics.DimensionProject},
+			Columns: []analytics.Dimension{analytics.DimensionTimeline},
+			Values:  []analytics.Metric{analytics.MetricSessions, analytics.MetricTokens, analytics.MetricCost},
+			Period:  analytics.BucketMonth,
+		},
 	}
 	m.configModTime = fileModTime(configPath)
 	if len(cfg.Locations) == 0 {
@@ -532,63 +548,25 @@ func (m Model) updateFilterHelp(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateAnalytics(key string) (tea.Model, tea.Cmd) {
-	const (
-		analyticsFocusDimension = iota
-		analyticsFocusMetric
-	)
 	if m.analyticsConfigOpen {
-		switch key {
-		case m.keys.back, m.keys.clearSearch:
+		// Keep the pre-pivot state machine working for callers that construct a
+		// Model directly (and for the existing metric-selection tests).
+		if len(m.analyticsPivotConfig.Rows) == 0 && len(m.analyticsPivotConfig.Values) == 0 && len(m.analyticsMetrics) == 0 && key == m.keys.confirm {
 			m.analyticsConfigOpen = false
-		case m.keys.analyticsFocus:
-			m.analyticsFocus = (m.analyticsFocus + 1) % 2
-		case m.keys.analytics:
-			m.mode = modeNormal
-			m.analyticsConfigOpen = false
-		case m.keys.quit:
-			return m, tea.Quit
-		case m.keys.analyticsNext, m.keys.right:
-			if m.analyticsFocus == analyticsFocusDimension {
-				m.analyticsDimension = (m.analyticsDimension + 1) % len(analytics.Dimensions)
-			} else {
-				m.moveAnalyticsMetric(1)
-			}
-		case m.keys.analyticsPrev, m.keys.left:
-			if m.analyticsFocus == analyticsFocusDimension {
-				m.analyticsDimension--
-				if m.analyticsDimension < 0 {
-					m.analyticsDimension = len(analytics.Dimensions) - 1
-				}
-			} else {
-				m.moveAnalyticsMetric(-1)
-			}
-		case m.keys.up:
-			if m.analyticsFocus == analyticsFocusDimension {
-				m.analyticsDimension--
-				if m.analyticsDimension < 0 {
-					m.analyticsDimension = len(analytics.Dimensions) - 1
-				}
-			} else {
-				m.moveAnalyticsMetric(-1)
-			}
-		case m.keys.down:
-			if m.analyticsFocus == analyticsFocusDimension {
-				m.analyticsDimension = (m.analyticsDimension + 1) % len(analytics.Dimensions)
-			} else {
-				m.moveAnalyticsMetric(1)
-			}
-		case m.keys.analyticsBucket:
-			m.analyticsBucket = (m.analyticsBucket + 1) % len(analytics.Buckets)
-		case m.keys.analyticsView:
-			m.analyticsView = (m.analyticsView + 1) % analyticsViewCount
-		case m.keys.confirm:
-			if m.analyticsFocus == analyticsFocusMetric {
+			return m, nil
+		}
+		if len(m.analyticsPivotConfig.Rows) == 0 && len(m.analyticsPivotConfig.Values) == 0 && m.analyticsFocus != 0 {
+			switch key {
+			case m.keys.up, m.keys.down:
+				m.moveAnalyticsMetric(map[bool]int{true: 1, false: -1}[key == m.keys.down])
+			case m.keys.confirm:
 				m.toggleAnalyticsMetric()
-			} else {
+			case m.keys.back, m.keys.clearSearch:
 				m.analyticsConfigOpen = false
 			}
+			return m, nil
 		}
-		return m, nil
+		return m.updatePivotConfig(key)
 	}
 
 	switch key {
@@ -598,32 +576,209 @@ func (m Model) updateAnalytics(key string) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case m.keys.analyticsFocus:
 		m.analyticsConfigOpen = true
-		m.analyticsFocus = analyticsFocusDimension
+		m.analyticsPivotFocus = pivotFocusDimensions
+		m.analyticsPivotCursor = 0
 	case m.keys.analyticsBucket:
 		m.analyticsBucket = (m.analyticsBucket + 1) % len(analytics.Buckets)
 	case m.keys.analyticsView:
 		m.analyticsView = (m.analyticsView + 1) % analyticsViewCount
-	case m.keys.left:
-		m.analyticsColumnOffset--
-		if m.analyticsColumnOffset < 0 {
-			m.analyticsColumnOffset = 0
+	case m.keys.left, "h":
+		if m.analyticsPivotColCursor > 0 {
+			m.analyticsPivotColCursor--
 		}
-	case m.keys.right:
-		m.analyticsColumnOffset++
+		m.analyticsPivotColumnOffset = m.analyticsPivotColCursor
+	case m.keys.right, "l":
+		m.analyticsPivotColCursor++
+		m.analyticsPivotColumnOffset = m.analyticsPivotColCursor
 	case m.keys.export:
 		m.exportPrompt = true
 		m.exportTarget = exportTargetAnalytics
 		m.exportChoice = 0
 		m.status = "choose export format"
-	case m.keys.up:
-		m.analyticsRowCursor--
-	case m.keys.down:
-		m.analyticsRowCursor++
+	case m.keys.up, "k":
+		if m.analyticsPivotRowCursor > 0 {
+			m.analyticsPivotRowCursor--
+		}
+		m.analyticsPivotRowOffset = m.analyticsPivotRowCursor
+	case m.keys.down, "j":
+		m.analyticsPivotRowCursor++
+		m.analyticsPivotRowOffset = m.analyticsPivotRowCursor
 	}
 	if m.analyticsRowCursor < 0 {
 		m.analyticsRowCursor = 0
 	}
 	return m, nil
+}
+
+const (
+	pivotFocusDimensions = iota
+	pivotFocusMetrics
+)
+
+func (m Model) pivotConfig() analytics.PivotConfig {
+	if len(m.analyticsPivotConfig.Rows) == 0 && len(m.analyticsPivotConfig.Columns) == 0 && len(m.analyticsPivotConfig.Values) == 0 && len(m.analyticsPivotConfig.Fields) == 0 {
+		return analytics.PivotConfig{Rows: []analytics.Dimension{analytics.Dimension(m.analyticsDimension)}, Values: selectedAnalyticsMetrics(m.analyticsMetrics), Period: analytics.Bucket(m.analyticsBucket)}
+	}
+	return m.analyticsPivotConfig
+}
+
+func (m Model) pivotFields() []analytics.Field {
+	fields := make([]analytics.Field, 0, len(analytics.Dimensions)+len(analytics.Metrics))
+	for _, dimension := range analytics.Dimensions {
+		fields = append(fields, analytics.Field{Dimension: dimension, Role: analytics.RoleRow})
+	}
+	for _, metric := range analytics.Metrics {
+		fields = append(fields, analytics.Field{Metric: metric, Role: analytics.RoleValue})
+	}
+	return fields
+}
+
+func (m Model) updatePivotConfig(key string) (tea.Model, tea.Cmd) {
+	if m.analyticsPlacementOpen {
+		return m.updatePivotPlacement(key)
+	}
+	if key == m.keys.quit {
+		return m, tea.Quit
+	}
+	if key == m.keys.back || key == m.keys.clearSearch || key == m.keys.analytics {
+		m.analyticsConfigOpen = false
+		return m, nil
+	}
+	if key == "tab" || key == m.keys.analyticsFocus {
+		m.analyticsPivotFocus = (m.analyticsPivotFocus + 1) % 2
+		m.analyticsPivotCursor = 0
+		return m, nil
+	}
+	if key == "shift+tab" {
+		m.analyticsPivotFocus--
+		if m.analyticsPivotFocus < 0 {
+			m.analyticsPivotFocus = 1
+		}
+		m.analyticsPivotCursor = 0
+		return m, nil
+	}
+	fields := m.pivotFields()
+	if key == m.keys.up || key == "k" {
+		if m.analyticsPivotCursor > 0 {
+			m.analyticsPivotCursor--
+		}
+		return m, nil
+	}
+	if key == m.keys.down || key == "j" {
+		m.analyticsPivotCursor++
+		m.clampPivotCursor(fields)
+		return m, nil
+	}
+	if key == m.keys.left || key == "h" {
+		return m, nil
+	}
+	if key == m.keys.right || key == "l" {
+		return m, nil
+	}
+	if key == m.keys.analyticsBucket {
+		config := m.pivotConfig()
+		config.Period = analytics.Bucket((int(config.Period) + 1) % len(analytics.Buckets))
+		m.analyticsPivotConfig = config
+		return m, nil
+	}
+	if key != m.keys.confirm {
+		return m, nil
+	}
+	config := m.pivotConfig()
+	if m.analyticsPivotFocus == pivotFocusDimensions {
+		fieldIndex := m.analyticsPivotCursor
+		if fieldIndex < len(fields) {
+			dimension := fields[fieldIndex].Dimension
+			if removePivotDimension(&config, dimension) {
+				m.analyticsPivotConfig = config
+				return m, nil
+			}
+			m.analyticsPlacementOpen = true
+			m.analyticsPlacementCursor = 0
+			m.analyticsPlacementField = dimension
+		}
+	} else if m.analyticsPivotFocus == pivotFocusMetrics {
+		fieldIndex := len(analytics.Dimensions) + m.analyticsPivotCursor
+		if fieldIndex < len(fields) {
+			m.togglePivotMetric(&config, fields[fieldIndex].Metric)
+		}
+	}
+	m.analyticsPivotConfig = config
+	return m, nil
+}
+
+func (m Model) updatePivotPlacement(key string) (tea.Model, tea.Cmd) {
+	if key == m.keys.back || key == m.keys.clearSearch {
+		m.analyticsPlacementOpen = false
+		return m, nil
+	}
+	if key == m.keys.up || key == "k" || key == m.keys.down || key == "j" {
+		if key == m.keys.up || key == "k" {
+			m.analyticsPlacementCursor = (m.analyticsPlacementCursor + 1) % 2
+		} else {
+			m.analyticsPlacementCursor = (m.analyticsPlacementCursor + 1) % 2
+		}
+		return m, nil
+	}
+	if key != m.keys.confirm {
+		return m, nil
+	}
+	config := m.pivotConfig()
+	if m.analyticsPlacementCursor == 0 {
+		config.Rows = append(config.Rows, m.analyticsPlacementField)
+	} else {
+		config.Columns = append(config.Columns, m.analyticsPlacementField)
+	}
+	m.analyticsPivotConfig = config
+	m.analyticsPlacementOpen = false
+	return m, nil
+}
+
+func (m *Model) clampPivotCursor(fields []analytics.Field) {
+	limit := len(fields)
+	switch m.analyticsPivotFocus {
+	case pivotFocusDimensions:
+		limit = len(analytics.Dimensions)
+	case pivotFocusMetrics:
+		limit = len(analytics.Metrics)
+	}
+	if limit == 0 {
+		m.analyticsPivotCursor = 0
+	} else if m.analyticsPivotCursor >= limit {
+		m.analyticsPivotCursor = limit - 1
+	}
+}
+
+func removePivotDimension(config *analytics.PivotConfig, dimension analytics.Dimension) bool {
+	for i, value := range config.Rows {
+		if value == dimension {
+			config.Rows = append(config.Rows[:i], config.Rows[i+1:]...)
+			return true
+		}
+	}
+	for i, value := range config.Columns {
+		if value == dimension {
+			config.Columns = append(config.Columns[:i], config.Columns[i+1:]...)
+			return true
+		}
+	}
+	for i, filter := range config.Filters {
+		if filter.Dimension == dimension {
+			config.Filters = append(config.Filters[:i], config.Filters[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) togglePivotMetric(config *analytics.PivotConfig, metric analytics.Metric) {
+	for i, value := range config.Values {
+		if value == metric {
+			config.Values = append(config.Values[:i], config.Values[i+1:]...)
+			return
+		}
+	}
+	config.Values = append(config.Values, metric)
 }
 
 func (m *Model) moveAnalyticsMetric(delta int) {
