@@ -144,6 +144,9 @@ type Model struct {
 	analyticsFocus        int
 	analyticsMetricCursor int
 	analyticsMetrics      []bool
+	analyticsConfigOpen   bool
+	analyticsRowCursor    int
+	analyticsColumnOffset int
 }
 
 type resolvedKeys struct {
@@ -456,6 +459,9 @@ func (m Model) updateNormal(key string) (tea.Model, tea.Cmd) {
 		m.mode = modeFilterHelp
 	case m.keys.analytics:
 		m.mode = modeAnalytics
+		m.analyticsConfigOpen = false
+		m.analyticsRowCursor = 0
+		m.analyticsColumnOffset = 0
 	case m.keys.clearSearch:
 		if m.filter != "" {
 			m.filter = ""
@@ -530,66 +536,117 @@ func (m Model) updateAnalytics(key string) (tea.Model, tea.Cmd) {
 		analyticsFocusDimension = iota
 		analyticsFocusMetric
 	)
+	if m.analyticsConfigOpen {
+		switch key {
+		case m.keys.back, m.keys.clearSearch:
+			m.analyticsConfigOpen = false
+		case m.keys.analyticsFocus:
+			m.analyticsFocus = (m.analyticsFocus + 1) % 2
+		case m.keys.analytics:
+			m.mode = modeNormal
+			m.analyticsConfigOpen = false
+		case m.keys.quit:
+			return m, tea.Quit
+		case m.keys.analyticsNext, m.keys.right:
+			if m.analyticsFocus == analyticsFocusDimension {
+				m.analyticsDimension = (m.analyticsDimension + 1) % len(analytics.Dimensions)
+			} else {
+				m.moveAnalyticsMetric(1)
+			}
+		case m.keys.analyticsPrev, m.keys.left:
+			if m.analyticsFocus == analyticsFocusDimension {
+				m.analyticsDimension--
+				if m.analyticsDimension < 0 {
+					m.analyticsDimension = len(analytics.Dimensions) - 1
+				}
+			} else {
+				m.moveAnalyticsMetric(-1)
+			}
+		case m.keys.up:
+			if m.analyticsFocus == analyticsFocusDimension {
+				m.analyticsDimension--
+				if m.analyticsDimension < 0 {
+					m.analyticsDimension = len(analytics.Dimensions) - 1
+				}
+			} else {
+				m.moveAnalyticsMetric(-1)
+			}
+		case m.keys.down:
+			if m.analyticsFocus == analyticsFocusDimension {
+				m.analyticsDimension = (m.analyticsDimension + 1) % len(analytics.Dimensions)
+			} else {
+				m.moveAnalyticsMetric(1)
+			}
+		case m.keys.analyticsBucket:
+			m.analyticsBucket = (m.analyticsBucket + 1) % len(analytics.Buckets)
+		case m.keys.analyticsView:
+			m.analyticsView = (m.analyticsView + 1) % analyticsViewCount
+		case m.keys.confirm:
+			if m.analyticsFocus == analyticsFocusMetric {
+				m.toggleAnalyticsMetric()
+			} else {
+				m.analyticsConfigOpen = false
+			}
+		}
+		return m, nil
+	}
+
 	switch key {
 	case m.keys.back, m.keys.clearSearch, m.keys.analytics:
 		m.mode = modeNormal
 	case m.keys.quit:
 		return m, tea.Quit
 	case m.keys.analyticsFocus:
-		if m.analyticsFocus == analyticsFocusDimension {
-			m.analyticsFocus = analyticsFocusMetric
-		} else {
-			m.analyticsFocus = analyticsFocusDimension
-		}
-	case m.keys.analyticsNext, m.keys.right:
-		m.analyticsDimension = (m.analyticsDimension + 1) % len(analytics.Dimensions)
-	case m.keys.analyticsPrev, m.keys.left:
-		m.analyticsDimension--
-		if m.analyticsDimension < 0 {
-			m.analyticsDimension = len(analytics.Dimensions) - 1
-		}
+		m.analyticsConfigOpen = true
+		m.analyticsFocus = analyticsFocusDimension
 	case m.keys.analyticsBucket:
 		m.analyticsBucket = (m.analyticsBucket + 1) % len(analytics.Buckets)
 	case m.keys.analyticsView:
 		m.analyticsView = (m.analyticsView + 1) % analyticsViewCount
+	case m.keys.left:
+		m.analyticsColumnOffset--
+		if m.analyticsColumnOffset < 0 {
+			m.analyticsColumnOffset = 0
+		}
+	case m.keys.right:
+		m.analyticsColumnOffset++
 	case m.keys.export:
 		m.exportPrompt = true
 		m.exportTarget = exportTargetAnalytics
 		m.exportChoice = 0
 		m.status = "choose export format"
 	case m.keys.up:
-		if m.analyticsFocus == analyticsFocusDimension {
-			m.analyticsDimension--
-		} else {
-			m.analyticsMetricCursor--
-		}
+		m.analyticsRowCursor--
 	case m.keys.down:
-		if m.analyticsFocus == analyticsFocusDimension {
-			m.analyticsDimension++
-		} else {
-			m.analyticsMetricCursor++
-		}
-	case m.keys.confirm:
-		if m.analyticsFocus == analyticsFocusMetric {
-			if len(m.analyticsMetrics) == 0 {
-				m.analyticsMetrics = analytics.DefaultSelectedMetrics()
-			}
-			m.analyticsMetrics[m.analyticsMetricCursor] = !m.analyticsMetrics[m.analyticsMetricCursor]
-		}
+		m.analyticsRowCursor++
 	}
-	if m.analyticsDimension < 0 {
-		m.analyticsDimension = len(analytics.Dimensions) - 1
-	}
-	if m.analyticsDimension >= len(analytics.Dimensions) {
-		m.analyticsDimension = 0
-	}
-	if m.analyticsMetricCursor < 0 {
-		m.analyticsMetricCursor = 0
-	}
-	if m.analyticsMetricCursor >= len(analytics.Metrics) {
-		m.analyticsMetricCursor = len(analytics.Metrics) - 1
+	if m.analyticsRowCursor < 0 {
+		m.analyticsRowCursor = 0
 	}
 	return m, nil
+}
+
+func (m *Model) moveAnalyticsMetric(delta int) {
+	if len(m.analyticsMetrics) == 0 {
+		m.analyticsMetrics = analytics.DefaultSelectedMetrics()
+	}
+	if len(analytics.Metrics) == 0 {
+		return
+	}
+	if m.analyticsMetricCursor < 0 || m.analyticsMetricCursor >= len(analytics.Metrics) {
+		m.analyticsMetricCursor = 0
+	}
+	m.analyticsMetricCursor = (m.analyticsMetricCursor + delta + len(analytics.Metrics)) % len(analytics.Metrics)
+}
+
+func (m *Model) toggleAnalyticsMetric() {
+	if len(m.analyticsMetrics) == 0 {
+		m.analyticsMetrics = analytics.DefaultSelectedMetrics()
+	}
+	if m.analyticsMetricCursor < 0 || m.analyticsMetricCursor >= len(m.analyticsMetrics) {
+		m.analyticsMetricCursor = 0
+	}
+	m.analyticsMetrics[m.analyticsMetricCursor] = !m.analyticsMetrics[m.analyticsMetricCursor]
 }
 
 func (m Model) updateExportPrompt(key string) (tea.Model, tea.Cmd) {

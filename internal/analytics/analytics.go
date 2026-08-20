@@ -134,7 +134,7 @@ func DefaultSelectedMetrics() []bool {
 	selected := make([]bool, len(Metrics))
 	for i, m := range Metrics {
 		switch m {
-		case MetricSessions, MetricTokens, MetricCost, MetricCostPerToken, MetricTokensPerRequest, MetricCostPerRequest:
+		case MetricSessions, MetricTokens, MetricCost:
 			selected[i] = true
 		}
 	}

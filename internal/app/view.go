@@ -331,7 +331,10 @@ func (m Model) contextHints() []string {
 	case modeFilterHelp:
 		return []string{renderKey(m.keys.back) + " back", renderKey(m.keys.search) + " filter", renderKey(m.keys.quit) + " quit"}
 	case modeAnalytics:
-		return []string{renderKey(m.keys.back) + " back", renderKey(m.keys.export) + " export", renderKey(m.keys.analyticsFocus) + " fields/metrics", renderKey(m.keys.analyticsView) + " view", renderKey(m.keys.analyticsBucket) + " bucket", renderKey(m.keys.up) + "/" + renderKey(m.keys.down) + " select", renderKey(m.keys.confirm) + " toggle metric"}
+		if m.analyticsConfigOpen {
+			return []string{renderKey(m.keys.analyticsFocus) + " switch", renderKey(m.keys.confirm) + " apply/toggle", renderKey(m.keys.up) + "/" + renderKey(m.keys.down) + " move", renderKey(m.keys.back) + " close"}
+		}
+		return []string{renderKey(m.keys.analyticsFocus) + " configure", renderKey(m.keys.analyticsView) + " view", renderKey(m.keys.analyticsBucket) + " period", renderKey(m.keys.up) + "/" + renderKey(m.keys.down) + " rows", renderKey(m.keys.left) + "/" + renderKey(m.keys.right) + " columns", renderKey(m.keys.export) + " export", renderKey(m.keys.back) + " back"}
 	case modeRawData:
 		return []string{renderKey(m.keys.back) + " back", renderKey(m.keys.export) + " export", renderKey(m.keys.confirm) + " open row", renderKey(m.keys.openDocument) + " edit cell", renderKey(m.keys.rawNextTable) + " table", renderKey(m.keys.pageUp) + "/" + renderKey(m.keys.pageDown) + " page"}
 	case modeLoading:
@@ -475,86 +478,177 @@ func (m Model) renderAnalytics() string {
 	total := analytics.Totals(m.filtered)
 	selected := selectedAnalyticsMetrics(m.analyticsMetrics)
 	var b strings.Builder
-	b.WriteString("\n  " + ui.StylePrimary.Render("Analytics") + ui.StyleMuted.Render(fmt.Sprintf("  %d filtered sessions  dimension:%s  bucket:%s  view:%s", len(m.filtered), dimension, bucket, analyticsViewName(m.analyticsView))) + "\n")
+	b.WriteString("\n  " + ui.StylePrimary.Render("Analytics") + ui.StyleMuted.Render(fmt.Sprintf("  %d sessions  group:%s", len(m.filtered), dimension)) + "\n")
+	b.WriteString("  " + ui.StyleMuted.Render("period:"+analyticsPeriodLabel(dimension, bucket)+"  view:"+analyticsViewName(m.analyticsView)+"  ") + renderMetricChips(selected, analytics.Metric(m.analyticsMetricCursor)) + "\n")
 	if m.filter != "" {
-		b.WriteString("  " + ui.StyleMuted.Render("filter: "+m.filter) + "\n")
-		if summary := searchSummary(m.filter); summary != "" {
-			b.WriteString("  " + ui.StyleMuted.Render("parsed: "+summary) + "\n")
-		}
+		b.WriteString("  " + ui.StyleMuted.Render("filter: "+truncate(m.filter, max(10, m.width-12))) + "\n")
 	}
-	b.WriteString("\n")
-	if m.analyticsView != analyticsViewTable {
-		b.WriteString(m.renderAnalyticsGraph(rows, selected))
-		b.WriteString(ui.StyleMuted.Render(strings.Repeat("─", max(1, m.width))) + "\n")
-		b.WriteString("  " + ui.StylePrimary.Render("Total") + "  ")
-		for _, metric := range selected {
-			b.WriteString(metric.String() + ":" + analytics.Value(total, metric) + "  ")
-		}
-		b.WriteString("\n")
-		b.WriteString(m.renderStatus())
-		return b.String()
+	if m.analyticsConfigOpen {
+		b.WriteString(m.renderAnalyticsConfig())
+	} else if m.analyticsView == analyticsViewTable {
+		b.WriteString(m.renderAnalyticsTable(rows, selected, total))
+	} else {
+		b.WriteString(m.renderAnalyticsGraphPanel(rows, selected, total))
 	}
-	metricW := 18
-	b.WriteString("  " + ui.StyleAccent.Render("Group By") + "\n")
-	for i, dimensionOption := range analytics.Dimensions {
-		cursor := "  "
-		style := ui.StyleNormal
-		if i == m.analyticsDimension {
-			cursor = "● "
-		}
-		if m.analyticsFocus == 0 && i == m.analyticsDimension {
-			style = ui.StyleSelected
-		}
-		b.WriteString("  " + style.Render(cursor+dimensionOption.String()) + "\n")
+	b.WriteString("\n" + ui.StyleMuted.Render(strings.Repeat("─", max(1, m.width))) + "\n" + m.renderStatus())
+	return b.String()
+}
+
+func analyticsPeriodLabel(dimension analytics.Dimension, bucket analytics.Bucket) string {
+	if dimension != analytics.DimensionTimeline {
+		return "n/a"
 	}
-	b.WriteString("\n")
-	b.WriteString("  " + ui.StyleAccent.Render("Metrics") + "\n")
-	for i, metric := range analytics.Metrics {
-		cursor := "  "
-		style := ui.StyleNormal
-		if m.analyticsFocus == 1 && i == m.analyticsMetricCursor {
-			cursor = "▶ "
-			style = ui.StyleSelected
-		}
-		check := "[ ]"
-		if i < len(m.analyticsMetrics) && m.analyticsMetrics[i] {
-			check = "[x]"
-		}
-		b.WriteString("  " + style.Render(cursor+check+" "+metric.String()) + "\n")
+	return bucket.String()
+}
+
+func renderMetricChips(selected []analytics.Metric, active analytics.Metric) string {
+	if len(selected) == 0 {
+		return ui.StyleMuted.Render("metric:none")
 	}
-	b.WriteString("\n")
-	keyW := max(16, m.width-len(selected)*metricW-4)
-	if keyW > 34 {
-		keyW = 34
-	}
-	b.WriteString("  " + ui.StyleAccent.Render(padRight(dimension.String(), keyW)))
+	parts := []string{"metric:"}
 	for _, metric := range selected {
+		style := ui.StyleMuted
+		if metric == active {
+			style = ui.StyleAccent
+		}
+		parts = append(parts, style.Render(metric.String()))
+	}
+	return strings.Join(parts, " ")
+}
+
+func (m Model) renderAnalyticsConfig() string {
+	var b strings.Builder
+	b.WriteString("\n  " + ui.StyleAccent.Render("Analytics Configuration") + "\n")
+	b.WriteString("  " + ui.StyleMuted.Render("Tab changes section. Enter toggles metrics. Horizontal space is preserved for results.") + "\n\n")
+	leftW := max(24, m.width/2-4)
+	b.WriteString("  " + ui.StyleAccent.Render("Group by") + padRight("", leftW-len("Group by")))
+	b.WriteString(ui.StyleAccent.Render("Metrics") + "\n")
+	rows := max(1, m.height-11)
+	for i := 0; i < rows; i++ {
+		left := ""
+		if i < len(analytics.Dimensions) {
+			prefix := "  "
+			if i == m.analyticsDimension && m.analyticsFocus == 0 {
+				prefix = "▶ "
+			}
+			left = prefix + analytics.Dimensions[i].String()
+		}
+		right := ""
+		if i < len(analytics.Metrics) {
+			check := "[ ]"
+			if i < len(m.analyticsMetrics) && m.analyticsMetrics[i] {
+				check = "[x]"
+			}
+			prefix := "  "
+			if i == m.analyticsMetricCursor && m.analyticsFocus == 1 {
+				prefix = "▶ "
+			}
+			right = prefix + check + " " + analytics.Metrics[i].String()
+		}
+		b.WriteString("  " + padRight(truncate(left, leftW-2), leftW) + truncate(right, max(8, m.width-leftW-4)) + "\n")
+	}
+	b.WriteString("\n  " + ui.StyleMuted.Render("view:"+analyticsViewName(m.analyticsView)+"  period:"+analytics.Buckets[m.analyticsBucket].String()) + "\n")
+	return b.String()
+}
+
+func (m Model) renderAnalyticsTable(rows []analytics.Row, selected []analytics.Metric, total analytics.Row) string {
+	labelW := min(28, max(16, m.width/4))
+	metricW := 15
+	visible := max(1, (m.width-labelW-4)/(metricW+1))
+	offset := min(m.analyticsColumnOffset, max(0, len(selected)-visible))
+	end := min(len(selected), offset+visible)
+	var b strings.Builder
+	b.WriteString("\n  " + ui.StyleMuted.Render(fmt.Sprintf("rows 1-%d of %d  columns %d-%d of %d", min(len(rows), max(0, m.height-10)), len(rows), offset+1, end, len(selected))) + "\n")
+	b.WriteString("  " + ui.StyleAccent.Render(padRight("group", labelW)))
+	for _, metric := range selected[offset:end] {
 		b.WriteString(ui.StyleAccent.Render(padRight(metric.String(), metricW)))
 	}
 	b.WriteString("\n")
-	limit := min(len(rows), max(4, m.height-22))
-	for i := 0; i < limit; i++ {
+	rowLimit := max(1, m.height-12)
+	rowCursor := min(m.analyticsRowCursor, max(0, len(rows)-1))
+	start := 0
+	if rowCursor >= rowLimit {
+		start = rowCursor - rowLimit + 1
+	}
+	endRow := min(len(rows), start+rowLimit)
+	for i := start; i < endRow; i++ {
 		row := rows[i]
-		b.WriteString("  " + padRight(truncate(row.Key, keyW-1), keyW))
-		for _, metric := range selected {
-			b.WriteString(padRight(analytics.Value(row, metric), metricW))
+		prefix := "  "
+		style := ui.StyleNormal
+		if i == rowCursor {
+			prefix = "▶ "
+			style = ui.StyleSelected
 		}
-		b.WriteString("\n")
+		line := prefix + padRight(truncate(row.Key, labelW-2), labelW-2)
+		for _, metric := range selected[offset:end] {
+			line += padRight(analytics.Value(row, metric), metricW)
+		}
+		b.WriteString(style.Render(truncate(line, m.width-2)) + "\n")
 	}
 	b.WriteString(ui.StyleMuted.Render(strings.Repeat("─", max(1, m.width))) + "\n")
 	b.WriteString("  " + ui.StylePrimary.Render("Total") + "  ")
-	for _, metric := range selected {
+	for _, metric := range selected[offset:end] {
 		b.WriteString(metric.String() + ":" + analytics.Value(total, metric) + "  ")
 	}
 	b.WriteString("\n")
-	b.WriteString(m.renderStatus())
 	return b.String()
+}
+
+func (m Model) renderAnalyticsGraphPanel(rows []analytics.Row, selected []analytics.Metric, total analytics.Row) string {
+	metric := analytics.MetricSessions
+	if len(selected) > 0 {
+		metric = selected[0]
+		for _, candidate := range selected {
+			if candidate == analytics.Metric(m.analyticsMetricCursor) {
+				metric = candidate
+				break
+			}
+		}
+	}
+	var b strings.Builder
+	b.WriteString("\n  " + ui.StyleAccent.Render(metric.String()+" by "+analytics.Dimensions[m.analyticsDimension].String()) + "\n")
+	if m.analyticsView == analyticsViewSparkline {
+		b.WriteString(renderSparkline(rows, metric, m.width))
+	} else {
+		b.WriteString(renderAnalyticsBars(rows, metric, m.width, max(4, m.height-13)))
+	}
+	b.WriteString("  " + ui.StylePrimary.Render("Total") + "  " + analytics.Value(total, metric) + "\n")
+	return b.String()
+}
+
+func renderAnalyticsBars(rows []analytics.Row, metric analytics.Metric, width, height int) string {
+	limit := min(len(rows), max(1, height-2))
+	labelW := min(28, max(16, width/4))
+	barW := max(8, width-labelW-18)
+	maxVal := 0.0
+	for i := 0; i < limit; i++ {
+		maxVal = maxFloat(maxVal, metricNumeric(rows[i], metric))
+	}
+	var b strings.Builder
+	for i := 0; i < limit; i++ {
+		row := rows[i]
+		filled := 0
+		if maxVal > 0 {
+			filled = int(metricNumeric(row, metric) / maxVal * float64(barW))
+		}
+		b.WriteString("  " + padRight(truncate(row.Key, labelW-1), labelW) + ui.StylePrimary.Render(strings.Repeat("█", filled)) + ui.StyleMuted.Render(strings.Repeat("░", max(0, barW-filled))) + " " + analytics.Value(row, metric) + "\n")
+	}
+	if len(rows) > limit {
+		b.WriteString("  " + ui.StyleMuted.Render(fmt.Sprintf("... %d more groups", len(rows)-limit)) + "\n")
+	}
+	return b.String()
+}
+
+func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 const (
 	analyticsViewTable = iota
 	analyticsViewBar
-	analyticsViewTimeline
 	analyticsViewSparkline
 	analyticsViewCount
 )
@@ -564,9 +658,7 @@ func analyticsViewName(v int) string {
 	case analyticsViewTable:
 		return "table"
 	case analyticsViewBar:
-		return "bar"
-	case analyticsViewTimeline:
-		return "timeline"
+		return "bars"
 	case analyticsViewSparkline:
 		return "sparkline"
 	default:
@@ -582,8 +674,6 @@ func (m Model) renderAnalyticsGraph(rows []analytics.Row, selected []analytics.M
 	switch m.analyticsView {
 	case analyticsViewSparkline:
 		return renderSparkline(rows, metric, m.width)
-	case analyticsViewTimeline:
-		return renderBars(rows, metric, m.width, true)
 	default:
 		return renderBars(rows, metric, m.width, false)
 	}
